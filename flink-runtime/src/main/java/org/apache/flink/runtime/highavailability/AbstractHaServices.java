@@ -20,11 +20,13 @@ package org.apache.flink.runtime.highavailability;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.AutoCloseableRegistry;
 import org.apache.flink.runtime.blob.BlobStore;
 import org.apache.flink.runtime.blob.BlobStoreService;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
 import org.apache.flink.runtime.jobmanager.JobGraphStore;
 import org.apache.flink.runtime.leaderelection.DefaultLeaderElectionService;
+import org.apache.flink.runtime.leaderelection.LeaderElection;
 import org.apache.flink.runtime.leaderelection.LeaderElectionDriverFactory;
 import org.apache.flink.runtime.leaderelection.LeaderElectionService;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
@@ -68,6 +70,8 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
 
     private final JobResultStore jobResultStore;
 
+    private final AutoCloseableRegistry closeableRegistry = new AutoCloseableRegistry();
+
     protected AbstractHaServices(
             Configuration config,
             Executor ioExecutor,
@@ -107,23 +111,23 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
     }
 
     @Override
-    public LeaderElectionService getResourceManagerLeaderElectionService() {
-        return createLeaderElectionService(getLeaderPathForResourceManager());
+    public LeaderElection getResourceManagerLeaderElection() throws Exception {
+        return createLeaderElection(getLeaderPathForResourceManager());
     }
 
     @Override
-    public LeaderElectionService getDispatcherLeaderElectionService() {
-        return createLeaderElectionService(getLeaderPathForDispatcher());
+    public LeaderElection getDispatcherLeaderElection() throws Exception {
+        return createLeaderElection(getLeaderPathForDispatcher());
     }
 
     @Override
-    public LeaderElectionService getJobManagerLeaderElectionService(JobID jobID) {
-        return createLeaderElectionService(getLeaderPathForJobManager(jobID));
+    public LeaderElection getJobManagerLeaderElection(JobID jobID) throws Exception {
+        return createLeaderElection(getLeaderPathForJobManager(jobID));
     }
 
     @Override
-    public LeaderElectionService getClusterRestEndpointLeaderElectionService() {
-        return createLeaderElectionService(getLeaderPathForRestServer());
+    public LeaderElection getClusterRestEndpointLeaderElection() throws Exception {
+        return createLeaderElection(getLeaderPathForRestServer());
     }
 
     @Override
@@ -157,6 +161,12 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
         }
 
         try {
+            closeableRegistry.close();
+        } catch (Throwable t) {
+            exception = ExceptionUtils.firstOrSuppressed(t, exception);
+        }
+
+        try {
             internalClose();
         } catch (Throwable t) {
             exception = ExceptionUtils.firstOrSuppressed(t, exception);
@@ -181,6 +191,12 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
             deletedHAData = true;
         } catch (Exception t) {
             exception = t;
+        }
+
+        try {
+            closeableRegistry.close();
+        } catch (Throwable t) {
+            exception = ExceptionUtils.firstOrSuppressed(t, exception);
         }
 
         try {
@@ -225,8 +241,18 @@ public abstract class AbstractHaServices implements HighAvailabilityServices {
                 executor);
     }
 
-    private LeaderElectionService createLeaderElectionService(String leaderName) {
-        return new DefaultLeaderElectionService(createLeaderElectionDriverFactory(leaderName));
+    private LeaderElection createLeaderElection(String leaderName) throws Exception {
+        final DefaultLeaderElectionService leaderElectionService =
+                new DefaultLeaderElectionService(createLeaderElectionDriverFactory(leaderName));
+        leaderElectionService.startLeaderElectionBackend();
+
+        closeableRegistry.registerCloseable(leaderElectionService);
+        // the leaderName which is passed as a contenderID here is not actively used within the
+        // DefaultLeaderElectionService for now - this will change in a future step where the
+        // DefaultLeaderElectionService will start to use MultipleComponentLeaderElectionDriver
+        // instead of LeaderElectionDriver and fully replace
+        // DefaultMultipleComponentLeaderElectionService (FLINK-31783)
+        return leaderElectionService.createLeaderElection("unused-contender-id");
     }
 
     /**

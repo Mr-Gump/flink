@@ -26,6 +26,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.core.execution.CheckpointType;
 import org.apache.flink.core.execution.SavepointFormatType;
+import org.apache.flink.core.failure.FailureEnricher;
 import org.apache.flink.queryablestate.KvStateID;
 import org.apache.flink.runtime.accumulators.AccumulatorSnapshot;
 import org.apache.flink.runtime.blob.BlobWriter;
@@ -53,6 +54,7 @@ import org.apache.flink.runtime.io.network.partition.PartitionTrackerFactory;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.JobResourceRequirements;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobmanager.OnCompletionActions;
@@ -205,6 +207,7 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
 
     private final ExecutionDeploymentTracker executionDeploymentTracker;
     private final ExecutionDeploymentReconciler executionDeploymentReconciler;
+    private final Collection<FailureEnricher> failureEnrichers;
 
     // -------- Mutable fields ---------
 
@@ -242,6 +245,7 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
             ExecutionDeploymentTracker executionDeploymentTracker,
             ExecutionDeploymentReconciler.Factory executionDeploymentReconcilerFactory,
             BlocklistHandler.Factory blocklistHandlerFactory,
+            Collection<FailureEnricher> failureEnrichers,
             long initializationTimestamp)
             throws Exception {
 
@@ -344,6 +348,9 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
 
         this.jobManagerJobMetricGroup = jobMetricGroupFactory.create(jobGraph);
         this.jobStatusListener = new JobManagerJobStatusListener();
+
+        this.failureEnrichers = checkNotNull(failureEnrichers);
+
         this.schedulerNG =
                 createScheduler(
                         slotPoolServiceSchedulerFactory,
@@ -388,6 +395,7 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
                         getMainThreadExecutor(),
                         fatalErrorHandler,
                         jobStatusListener,
+                        failureEnrichers,
                         blocklistHandler::addNewBlockedNodes);
 
         return scheduler;
@@ -934,6 +942,18 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
     @Override
     public CompletableFuture<Acknowledge> notifyNewBlockedNodes(Collection<BlockedNode> newNodes) {
         blocklistHandler.addNewBlockedNodes(newNodes);
+        return CompletableFuture.completedFuture(Acknowledge.get());
+    }
+
+    @Override
+    public CompletableFuture<JobResourceRequirements> requestJobResourceRequirements() {
+        return CompletableFuture.completedFuture(schedulerNG.requestJobResourceRequirements());
+    }
+
+    @Override
+    public CompletableFuture<Acknowledge> updateJobResourceRequirements(
+            JobResourceRequirements jobResourceRequirements) {
+        schedulerNG.updateJobResourceRequirements(jobResourceRequirements);
         return CompletableFuture.completedFuture(Acknowledge.get());
     }
 

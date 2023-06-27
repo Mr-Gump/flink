@@ -19,21 +19,16 @@
 package org.apache.flink.table.planner.delegation.hive;
 
 import org.apache.flink.connectors.hive.FlinkHiveException;
-import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.api.Schema;
-import org.apache.flink.table.api.TableColumn;
-import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.hive.client.HiveMetastoreClientWrapper;
 import org.apache.flink.table.catalog.hive.client.HiveShim;
 import org.apache.flink.table.catalog.hive.client.HiveShimLoader;
 import org.apache.flink.table.catalog.hive.factories.HiveCatalogFactoryOptions;
 import org.apache.flink.table.catalog.hive.util.HiveReflectionUtils;
 import org.apache.flink.table.catalog.hive.util.HiveTypeUtil;
-import org.apache.flink.table.expressions.SqlCallExpression;
+import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.functions.FunctionKind;
 import org.apache.flink.table.functions.hive.HiveGenericUDAF;
 import org.apache.flink.table.module.hive.udf.generic.GenericUDFLegacyGroupingID;
-import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
 import org.apache.flink.table.planner.delegation.hive.copy.HiveASTParseDriver;
 import org.apache.flink.table.planner.delegation.hive.copy.HiveParserASTNode;
 import org.apache.flink.table.planner.delegation.hive.copy.HiveParserBaseSemanticAnalyzer;
@@ -49,8 +44,6 @@ import org.apache.flink.table.planner.delegation.hive.copy.HiveParserUnparseTran
 import org.apache.flink.table.planner.delegation.hive.parse.HiveASTParser;
 import org.apache.flink.table.planner.delegation.hive.parse.HiveParserCreateViewInfo;
 import org.apache.flink.table.planner.delegation.hive.parse.HiveParserErrorMsg;
-import org.apache.flink.table.planner.functions.bridging.BridgingSqlAggFunction;
-import org.apache.flink.table.planner.functions.bridging.BridgingSqlFunction;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.util.Preconditions;
 
@@ -149,6 +142,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiPredicate;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.table.planner.delegation.hive.HiveParserTypeCheckProcFactory.DefaultExprProcessor.getFunctionText;
@@ -159,6 +153,11 @@ import static org.apache.flink.table.planner.delegation.hive.copy.HiveParserBase
 public class HiveParserUtils {
 
     private static final Logger LOG = LoggerFactory.getLogger(HiveParserUtils.class);
+
+    public static final String BRIDGING_SQL_FUNCTION_CLZ_NAME =
+            "org.apache.flink.table.planner.functions.bridging.BridgingSqlFunction";
+    private static final String BRIDGING_SQL_AGG_FUNCTION_CLZ_NAME =
+            "org.apache.flink.table.planner.functions.bridging.BridgingSqlAggFunction";
 
     private static final Class immutableListClz =
             HiveReflectionUtils.tryGetClass("com.google.common.collect.ImmutableList");
@@ -173,6 +172,21 @@ public class HiveParserUtils {
             HiveReflectionUtils.tryGetClass(
                     "org.apache.flink.calcite.shaded.com.google.common.collect.ImmutableSet");
     private static final boolean useShadedImmutableSet = shadedImmutableSetClz != null;
+
+    private static final BiPredicate<SqlOperator, String> BRIDGING_SQL_FUNCTION_CHECKER =
+            (sqlOperator, clazzName) -> {
+                if (sqlOperator != null) {
+                    Class<?> clazz = HiveReflectionUtils.tryGetClass(clazzName);
+                    if (clazz == null) {
+                        throw new FlinkHiveException(
+                                String.format(
+                                        "Fail to get class %s for the class can't be found",
+                                        clazzName));
+                    }
+                    return clazz.isInstance(sqlOperator);
+                }
+                return false;
+            };
 
     private HiveParserUtils() {}
 
@@ -623,11 +637,10 @@ public class HiveParserUtils {
             // this happens for temp functions
             SqlOperator sqlOperator =
                     getSqlOperator(aggName, opTable, SqlFunctionCategory.USER_DEFINED_FUNCTION);
-            if (sqlOperator instanceof BridgingSqlAggFunction
-                    && ((BridgingSqlAggFunction) sqlOperator).getDefinition()
-                            instanceof HiveGenericUDAF) {
+            if (isBridgingSqlAggFunction(sqlOperator)
+                    && getBridgingSqlFunctionDefinition(sqlOperator) instanceof HiveGenericUDAF) {
                 HiveGenericUDAF hiveGenericUDAF =
-                        (HiveGenericUDAF) ((BridgingSqlAggFunction) sqlOperator).getDefinition();
+                        (HiveGenericUDAF) getBridgingSqlFunctionDefinition(sqlOperator);
                 result =
                         hiveGenericUDAF.createEvaluator(
                                 originalParameterTypeInfos.toArray(new ObjectInspector[0]));
@@ -644,6 +657,28 @@ public class HiveParserUtils {
                             ErrorMsg.INVALID_FUNCTION_SIGNATURE, aggTree.getChild(0), reason));
         }
         return result;
+    }
+
+    public static boolean isBridgingSqlFunction(SqlOperator sqlOperator) {
+        return BRIDGING_SQL_FUNCTION_CHECKER.test(sqlOperator, BRIDGING_SQL_FUNCTION_CLZ_NAME);
+    }
+
+    private static boolean isBridgingSqlAggFunction(SqlOperator sqlOperator) {
+        return BRIDGING_SQL_FUNCTION_CHECKER.test(sqlOperator, BRIDGING_SQL_AGG_FUNCTION_CLZ_NAME);
+    }
+
+    private static FunctionDefinition getBridgingSqlFunctionDefinition(SqlOperator sqlOperator) {
+        try {
+            return (FunctionDefinition)
+                    HiveReflectionUtils.invokeMethod(
+                            sqlOperator.getClass(),
+                            sqlOperator,
+                            "getDefinition",
+                            new Class[] {},
+                            new Object[] {});
+        } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
+            throw new FlinkHiveException("Failed to create immutable list", e);
+        }
     }
 
     /**
@@ -937,8 +972,7 @@ public class HiveParserUtils {
             RelDataTypeFactory dataTypeFactory) {
         HiveParserOperatorBinding operatorBinding =
                 new HiveParserOperatorBinding(dataTypeFactory, sqlOperator, types, operands);
-        if (sqlOperator instanceof BridgingSqlFunction
-                || sqlOperator instanceof BridgingSqlAggFunction) {
+        if (isBridgingSqlFunction(sqlOperator) || isBridgingSqlAggFunction(sqlOperator)) {
             SqlReturnTypeInference returnTypeInference = sqlOperator.getReturnTypeInference();
             return returnTypeInference.inferReturnType(operatorBinding);
         } else {
@@ -1023,9 +1057,8 @@ public class HiveParserUtils {
     }
 
     public static boolean isUDTF(SqlOperator sqlOperator) {
-        if (sqlOperator instanceof BridgingSqlFunction) {
-            return ((BridgingSqlFunction) sqlOperator).getDefinition().getKind()
-                    == FunctionKind.TABLE;
+        if (isBridgingSqlFunction(sqlOperator)) {
+            return getBridgingSqlFunctionDefinition(sqlOperator).getKind() == FunctionKind.TABLE;
         } else {
             return sqlOperator instanceof SqlUserDefinedTableFunction;
         }
@@ -1534,20 +1567,6 @@ public class HiveParserUtils {
             // so we need to differentiate cast from a real literal
             return operand != null && RexUtil.isNullLiteral(operand, false);
         }
-
-        public Object[] getConstantOperands() {
-            Object[] res = new Object[operands.size()];
-            for (int i = 0; i < res.length; i++) {
-                if (isOperandLiteral(i, false)) {
-                    res[i] =
-                            getOperandLiteralValue(
-                                    i,
-                                    FlinkTypeFactory.toLogicalType(getOperandType(i))
-                                            .getDefaultConversion());
-                }
-            }
-            return res;
-        }
     }
 
     /** A bit both of HiveParserOperatorBinding and AggCallBinding . */
@@ -1694,62 +1713,5 @@ public class HiveParserUtils {
     public static boolean isFromTimeStampToDecimal(RelDataType srcType, RelDataType targetType) {
         return srcType.getSqlTypeName().equals(SqlTypeName.TIMESTAMP)
                 && targetType.getSqlTypeName().equals(SqlTypeName.DECIMAL);
-    }
-
-    /**
-     * Helps to migrate the new {@link Schema} to old API methods. HiveCatalog use deprecated {@link
-     * TableSchema}, other catalogs may use the new {@link Schema}. Currently, we use it to unify to
-     * {@link TableSchema}. It should be dropped after dropping {@link TableSchema}.
-     */
-    public static TableSchema fromUnresolvedSchema(Schema schema) {
-        final TableSchema.Builder builder = TableSchema.builder();
-
-        final DataType unresolvedType = DataTypes.TIMESTAMP(3);
-        schema.getColumns().stream()
-                .map(
-                        column -> {
-                            if (column instanceof Schema.UnresolvedPhysicalColumn) {
-                                final Schema.UnresolvedPhysicalColumn c =
-                                        (Schema.UnresolvedPhysicalColumn) column;
-                                return TableColumn.physical(
-                                        c.getName(), (DataType) c.getDataType());
-                            } else if (column instanceof Schema.UnresolvedMetadataColumn) {
-                                final Schema.UnresolvedMetadataColumn c =
-                                        (Schema.UnresolvedMetadataColumn) column;
-                                return TableColumn.metadata(
-                                        c.getName(),
-                                        (DataType) c.getDataType(),
-                                        c.getMetadataKey(),
-                                        c.isVirtual());
-                            } else if (column instanceof Schema.UnresolvedComputedColumn) {
-                                final Schema.UnresolvedComputedColumn c =
-                                        (Schema.UnresolvedComputedColumn) column;
-                                return TableColumn.computed(
-                                        c.getName(),
-                                        unresolvedType,
-                                        ((SqlCallExpression) c.getExpression()).getSqlExpression());
-                            }
-                            throw new IllegalArgumentException(
-                                    "Unsupported column type: " + column);
-                        })
-                .forEach(builder::add);
-
-        schema.getWatermarkSpecs()
-                .forEach(
-                        spec ->
-                                builder.watermark(
-                                        spec.getColumnName(),
-                                        ((SqlCallExpression) spec.getWatermarkExpression())
-                                                .getSqlExpression(),
-                                        unresolvedType));
-
-        schema.getPrimaryKey()
-                .ifPresent(
-                        pk ->
-                                builder.primaryKey(
-                                        pk.getConstraintName(),
-                                        pk.getColumnNames().toArray(new String[0])));
-
-        return builder.build();
     }
 }

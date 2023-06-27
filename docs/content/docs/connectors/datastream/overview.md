@@ -39,18 +39,20 @@ The [predefined data sinks]({{< ref "docs/dev/datastream/overview" >}}#data-sink
 Connectors provide code for interfacing with various third-party systems. Currently these systems are supported:
 
  * [Apache Kafka]({{< ref "docs/connectors/datastream/kafka" >}}) (source/sink)
- * [Apache Cassandra]({{< ref "docs/connectors/datastream/cassandra" >}}) (sink)
+ * [Apache Cassandra]({{< ref "docs/connectors/datastream/cassandra" >}}) (source/sink)
  * [Amazon DynamoDB]({{< ref "docs/connectors/datastream/dynamodb" >}}) (sink)
  * [Amazon Kinesis Data Streams]({{< ref "docs/connectors/datastream/kinesis" >}}) (source/sink)
  * [Amazon Kinesis Data Firehose]({{< ref "docs/connectors/datastream/firehose" >}}) (sink)
  * [DataGen]({{< ref "docs/connectors/datastream/datagen" >}}) (source)
  * [Elasticsearch]({{< ref "docs/connectors/datastream/elasticsearch" >}}) (sink)
+ * [Opensearch]({{< ref "docs/connectors/datastream/opensearch" >}}) (sink)
  * [FileSystem]({{< ref "docs/connectors/datastream/filesystem" >}}) (source/sink)
  * [RabbitMQ]({{< ref "docs/connectors/datastream/rabbitmq" >}}) (source/sink)
  * [Google PubSub]({{< ref "docs/connectors/datastream/pubsub" >}}) (source/sink)
  * [Hybrid Source]({{< ref "docs/connectors/datastream/hybridsource" >}}) (source)
  * [Apache Pulsar]({{< ref "docs/connectors/datastream/pulsar" >}}) (source)
  * [JDBC]({{< ref "docs/connectors/datastream/jdbc" >}}) (sink)
+ * [MongoDB]({{< ref "docs/connectors/datastream/mongodb" >}}) (source/sink)
 
 Keep in mind that to use one of these connectors in an application, additional third party
 components are usually required, e.g. servers for the data stores or message queues.

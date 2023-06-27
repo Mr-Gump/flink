@@ -18,53 +18,65 @@
 
 package org.apache.flink.docs.rest;
 
-import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.docs.rest.data.TestAdditionalFieldsMessageHeaders;
 import org.apache.flink.docs.rest.data.TestEmptyMessageHeaders;
 import org.apache.flink.docs.rest.data.TestExcludeMessageHeaders;
-import org.apache.flink.runtime.rest.handler.RestHandlerSpecification;
+import org.apache.flink.docs.rest.data.clash.inner.TestNameClashingMessageHeaders1;
+import org.apache.flink.docs.rest.data.clash.inner.TestNameClashingMessageHeaders2;
+import org.apache.flink.docs.rest.data.clash.top.pkg1.TestTopLevelNameClashingMessageHeaders1;
+import org.apache.flink.docs.rest.data.clash.top.pkg2.TestTopLevelNameClashingMessageHeaders2;
 import org.apache.flink.runtime.rest.util.DocumentingRestEndpoint;
 import org.apache.flink.runtime.rest.versioning.RuntimeRestAPIVersion;
-import org.apache.flink.util.FileUtils;
 
-import org.apache.flink.shaded.netty4.io.netty.channel.ChannelInboundHandler;
-
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.media.StringSchema;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.io.File;
-import java.util.Arrays;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
-import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
-import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test class for {@link OpenApiSpecGenerator}. */
 class OpenApiSpecGeneratorTest {
 
     @Test
-    void testTitle() throws Exception {
+    void testTitle(@TempDir Path tmpDir) throws Exception {
         final String title = "Funky title";
 
-        File file = File.createTempFile("rest_v0_", ".html");
+        final Path file = tmpDir.resolve("openapi_spec.yaml");
         OpenApiSpecGenerator.createDocumentationFile(
                 title,
-                new TestExcludeDocumentingRestEndpoint(),
+                DocumentingRestEndpoint.forRestHandlerSpecifications(
+                        new TestEmptyMessageHeaders("/test/empty1", "This is a testing REST API.")),
                 RuntimeRestAPIVersion.V0,
-                file.toPath());
-        String actual = FileUtils.readFile(file, "UTF-8");
+                file);
+        final String actual = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
 
         assertThat(actual).contains("title: " + title);
     }
 
     @Test
-    void testExcludeFromDocumentation() throws Exception {
-        File file = File.createTempFile("rest_v0_", ".html");
+    void testExcludeFromDocumentation(@TempDir Path tmpDir) throws Exception {
+        final Path file = tmpDir.resolve("openapi_spec.yaml");
         OpenApiSpecGenerator.createDocumentationFile(
                 "title",
-                new TestExcludeDocumentingRestEndpoint(),
+                DocumentingRestEndpoint.forRestHandlerSpecifications(
+                        new TestEmptyMessageHeaders("/test/empty1", "This is a testing REST API."),
+                        new TestEmptyMessageHeaders(
+                                "/test/empty2", "This is another testing REST API."),
+                        new TestExcludeMessageHeaders(
+                                "/test/exclude1",
+                                "This REST API should not appear in the generated documentation."),
+                        new TestExcludeMessageHeaders(
+                                "/test/exclude2",
+                                "This REST API should also not appear in the generated documentation.")),
                 RuntimeRestAPIVersion.V0,
-                file.toPath());
-        String actual = FileUtils.readFile(file, "UTF-8");
+                file);
+        final String actual = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
 
         assertThat(actual).contains("/test/empty1");
         assertThat(actual).contains("This is a testing REST API.");
@@ -79,56 +91,63 @@ class OpenApiSpecGeneratorTest {
                         "This REST API should also not appear in the generated documentation.");
     }
 
-    private static class TestExcludeDocumentingRestEndpoint implements DocumentingRestEndpoint {
-
-        @Override
-        public List<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> initializeHandlers(
-                CompletableFuture<String> localAddressFuture) {
-            return Arrays.asList(
-                    Tuple2.of(
-                            new TestEmptyMessageHeaders(
-                                    "/test/empty1", "This is a testing REST API."),
-                            null),
-                    Tuple2.of(
-                            new TestEmptyMessageHeaders(
-                                    "/test/empty2", "This is another testing REST API."),
-                            null),
-                    Tuple2.of(
-                            new TestExcludeMessageHeaders(
-                                    "/test/exclude1",
-                                    "This REST API should not appear in the generated documentation."),
-                            null),
-                    Tuple2.of(
-                            new TestExcludeMessageHeaders(
-                                    "/test/exclude2",
-                                    "This REST API should also not appear in the generated documentation."),
-                            null));
-        }
-    }
-
     @Test
-    void testDuplicateOperationIdsAreRejected() throws Exception {
-        File file = File.createTempFile("rest_v0_", ".html");
+    void testDuplicateOperationIdsAreRejected(@TempDir Path tmpDir) {
+        final Path file = tmpDir.resolve("openapi_spec.yaml");
         assertThatThrownBy(
                         () ->
                                 OpenApiSpecGenerator.createDocumentationFile(
                                         "title",
-                                        new TestDuplicateOperationIdDocumentingRestEndpoint(),
+                                        DocumentingRestEndpoint.forRestHandlerSpecifications(
+                                                new TestEmptyMessageHeaders("operation1"),
+                                                new TestEmptyMessageHeaders("operation1")),
                                         RuntimeRestAPIVersion.V0,
-                                        file.toPath()))
+                                        file))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Duplicate OperationId");
     }
 
-    private static class TestDuplicateOperationIdDocumentingRestEndpoint
-            implements DocumentingRestEndpoint {
+    @Test
+    void testAdditionalFields(@TempDir Path tmpDir) throws Exception {
+        final OpenAPI documentation =
+                OpenApiSpecGenerator.createDocumentation(
+                        "title",
+                        DocumentingRestEndpoint.forRestHandlerSpecifications(
+                                new TestAdditionalFieldsMessageHeaders("operation1")),
+                        RuntimeRestAPIVersion.V0);
+        assertThat(documentation.getComponents().getSchemas())
+                .extractingByKey("AdditionalFieldsRequestBody")
+                .satisfies(
+                        x ->
+                                assertThat(x.getAdditionalProperties())
+                                        .isInstanceOf(StringSchema.class));
+    }
 
-        @Override
-        public List<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> initializeHandlers(
-                CompletableFuture<String> localAddressFuture) {
-            return Arrays.asList(
-                    Tuple2.of(new TestEmptyMessageHeaders("operation1"), null),
-                    Tuple2.of(new TestEmptyMessageHeaders("operation1"), null));
-        }
+    @Test
+    void testModelNameClashByInnerClassesDetected() {
+        assertThatThrownBy(
+                        () ->
+                                OpenApiSpecGenerator.createDocumentation(
+                                        "title",
+                                        DocumentingRestEndpoint.forRestHandlerSpecifications(
+                                                new TestNameClashingMessageHeaders1(),
+                                                new TestNameClashingMessageHeaders2()),
+                                        RuntimeRestAPIVersion.V0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("clash");
+    }
+
+    @Test
+    void testModelNameClashByTopLevelClassesDetected() {
+        assertThatThrownBy(
+                        () ->
+                                OpenApiSpecGenerator.createDocumentation(
+                                        "title",
+                                        DocumentingRestEndpoint.forRestHandlerSpecifications(
+                                                new TestTopLevelNameClashingMessageHeaders1(),
+                                                new TestTopLevelNameClashingMessageHeaders2()),
+                                        RuntimeRestAPIVersion.V0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("clash");
     }
 }

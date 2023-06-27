@@ -18,6 +18,7 @@
 
 package org.apache.flink.util.concurrent;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FatalExitExceptionHandler;
@@ -419,20 +420,6 @@ public class FutureUtils {
      * @param future to time out
      * @param timeout after which the given future is timed out
      * @param timeUnit time unit of the timeout
-     * @param <T> type of the given future
-     * @return The timeout enriched future
-     */
-    public static <T> CompletableFuture<T> orTimeout(
-            CompletableFuture<T> future, long timeout, TimeUnit timeUnit) {
-        return orTimeout(future, timeout, timeUnit, Executors.directExecutor(), null);
-    }
-
-    /**
-     * Times the given future out after the timeout.
-     *
-     * @param future to time out
-     * @param timeout after which the given future is timed out
-     * @param timeUnit time unit of the timeout
      * @param timeoutMsg timeout message for exception
      * @param <T> type of the given future
      * @return The timeout enriched future
@@ -443,25 +430,6 @@ public class FutureUtils {
             TimeUnit timeUnit,
             @Nullable String timeoutMsg) {
         return orTimeout(future, timeout, timeUnit, Executors.directExecutor(), timeoutMsg);
-    }
-
-    /**
-     * Times the given future out after the timeout.
-     *
-     * @param future to time out
-     * @param timeout after which the given future is timed out
-     * @param timeUnit time unit of the timeout
-     * @param timeoutFailExecutor executor that will complete the future exceptionally after the
-     *     timeout is reached
-     * @param <T> type of the given future
-     * @return The timeout enriched future
-     */
-    public static <T> CompletableFuture<T> orTimeout(
-            CompletableFuture<T> future,
-            long timeout,
-            TimeUnit timeUnit,
-            Executor timeoutFailExecutor) {
-        return orTimeout(future, timeout, timeUnit, timeoutFailExecutor, null);
     }
 
     /**
@@ -1209,12 +1177,34 @@ public class FutureUtils {
     public static void handleUncaughtException(
             CompletableFuture<?> completableFuture,
             Thread.UncaughtExceptionHandler uncaughtExceptionHandler) {
+        handleUncaughtException(
+                completableFuture, uncaughtExceptionHandler, FatalExitExceptionHandler.INSTANCE);
+    }
+
+    @VisibleForTesting
+    static void handleUncaughtException(
+            CompletableFuture<?> completableFuture,
+            Thread.UncaughtExceptionHandler uncaughtExceptionHandler,
+            Thread.UncaughtExceptionHandler fatalErrorHandler) {
         checkNotNull(completableFuture)
                 .whenComplete(
                         (ignored, throwable) -> {
                             if (throwable != null) {
-                                uncaughtExceptionHandler.uncaughtException(
-                                        Thread.currentThread(), throwable);
+                                final Thread currentThread = Thread.currentThread();
+                                try {
+                                    uncaughtExceptionHandler.uncaughtException(
+                                            currentThread, throwable);
+                                } catch (Throwable t) {
+                                    final RuntimeException errorHandlerException =
+                                            new IllegalStateException(
+                                                    "An error occurred while executing the error handling for a "
+                                                            + throwable.getClass().getSimpleName()
+                                                            + ".",
+                                                    t);
+                                    errorHandlerException.addSuppressed(throwable);
+                                    fatalErrorHandler.uncaughtException(
+                                            currentThread, errorHandlerException);
+                                }
                             }
                         });
     }

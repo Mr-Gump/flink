@@ -67,6 +67,8 @@ import org.apache.flink.table.gateway.service.result.ResultFetcher;
 import org.apache.flink.table.gateway.service.utils.SqlExecutionException;
 import org.apache.flink.table.module.ModuleManager;
 import org.apache.flink.table.operations.BeginStatementSetOperation;
+import org.apache.flink.table.operations.CompileAndExecutePlanOperation;
+import org.apache.flink.table.operations.DeleteFromFilterOperation;
 import org.apache.flink.table.operations.EndStatementSetOperation;
 import org.apache.flink.table.operations.LoadModuleOperation;
 import org.apache.flink.table.operations.ModifyOperation;
@@ -76,6 +78,7 @@ import org.apache.flink.table.operations.StatementSetOperation;
 import org.apache.flink.table.operations.UnloadModuleOperation;
 import org.apache.flink.table.operations.UseOperation;
 import org.apache.flink.table.operations.command.AddJarOperation;
+import org.apache.flink.table.operations.command.ExecutePlanOperation;
 import org.apache.flink.table.operations.command.RemoveJarOperation;
 import org.apache.flink.table.operations.command.ResetOperation;
 import org.apache.flink.table.operations.command.SetOperation;
@@ -90,7 +93,6 @@ import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.TemporaryClassLoaderContext;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -182,23 +184,17 @@ public class OperationExecutor {
 
     public ResultFetcher executeStatement(OperationHandle handle, String statement) {
         // Instantiate the TableEnvironment lazily
-        // TODO: remove the usage of the context classloader until {@link
-        // HiveParserUtils}#getFunctionInfo use ResourceManager explicitly.
-        try (TemporaryClassLoaderContext ignored =
-                TemporaryClassLoaderContext.of(
-                        sessionContext.getSessionState().resourceManager.getUserClassLoader())) {
-            TableEnvironmentInternal tableEnv = getTableEnvironment();
-            List<Operation> parsedOperations = tableEnv.getParser().parse(statement);
-            if (parsedOperations.size() > 1) {
-                throw new UnsupportedOperationException(
-                        "Unsupported SQL statement! Execute statement only accepts a single SQL statement or "
-                                + "multiple 'INSERT INTO' statements wrapped in a 'STATEMENT SET' block.");
-            }
-            Operation op = parsedOperations.get(0);
-            return sessionContext.isStatementSetState()
-                    ? executeOperationInStatementSetState(tableEnv, handle, op)
-                    : executeOperation(tableEnv, handle, op);
+        TableEnvironmentInternal tableEnv = getTableEnvironment();
+        List<Operation> parsedOperations = tableEnv.getParser().parse(statement);
+        if (parsedOperations.size() > 1) {
+            throw new UnsupportedOperationException(
+                    "Unsupported SQL statement! Execute statement only accepts a single SQL statement or "
+                            + "multiple 'INSERT INTO' statements wrapped in a 'STATEMENT SET' block.");
         }
+        Operation op = parsedOperations.get(0);
+        return sessionContext.isStatementSetState()
+                ? executeOperationInStatementSetState(tableEnv, handle, op)
+                : executeOperation(tableEnv, handle, op);
     }
 
     public String getCurrentCatalog() {
@@ -307,7 +303,6 @@ public class OperationExecutor {
 
     // --------------------------------------------------------------------------------------------
 
-    @VisibleForTesting
     public TableEnvironmentInternal getTableEnvironment() {
         // checks the value of RUNTIME_MODE
         Configuration operationConfig = sessionContext.getSessionConf().clone();
@@ -430,6 +425,9 @@ public class OperationExecutor {
         } else if (op instanceof ModifyOperation) {
             return callModifyOperations(
                     tableEnv, handle, Collections.singletonList((ModifyOperation) op));
+        } else if (op instanceof CompileAndExecutePlanOperation
+                || op instanceof ExecutePlanOperation) {
+            return callExecuteOperation(tableEnv, handle, op);
         } else if (op instanceof StatementSetOperation) {
             return callModifyOperations(
                     tableEnv, handle, ((StatementSetOperation) op).getOperations());
@@ -513,6 +511,23 @@ public class OperationExecutor {
             OperationHandle handle,
             List<ModifyOperation> modifyOperations) {
         TableResultInternal result = tableEnv.executeInternal(modifyOperations);
+        // DeleteFromFilterOperation doesn't have a JobClient
+        if (modifyOperations.size() == 1
+                && modifyOperations.get(0) instanceof DeleteFromFilterOperation) {
+            return ResultFetcher.fromTableResult(handle, result, false);
+        }
+
+        return fetchJobId(result, handle);
+    }
+
+    private ResultFetcher callExecuteOperation(
+            TableEnvironmentInternal tableEnv,
+            OperationHandle handle,
+            Operation executePlanOperation) {
+        return fetchJobId(tableEnv.executeInternal(executePlanOperation), handle);
+    }
+
+    private ResultFetcher fetchJobId(TableResultInternal result, OperationHandle handle) {
         JobID jobID =
                 result.getJobClient()
                         .orElseThrow(

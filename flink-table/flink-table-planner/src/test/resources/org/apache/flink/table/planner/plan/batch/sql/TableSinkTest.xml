@@ -16,6 +16,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 <Root>
+  <TestCase name="testManagedTableSinkWithEnableCheckpointing">
+    <Resource name="ast">
+      <![CDATA[
+LogicalSink(table=[default_catalog.default_database.sink], fields=[a, b, c])
++- LogicalProject(a=[$0], b=[$1], c=[$2])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+]]>
+    </Resource>
+  </TestCase>
   <TestCase name="testDynamicPartWithOrderBy">
     <Resource name="ast">
       <![CDATA[
@@ -32,6 +41,15 @@ Sink(table=[default_catalog.default_database.sink], fields=[a, b])
    +- Exchange(distribution=[single])
       +- Calc(select=[a, b])
          +- BoundedStreamScan(table=[[default_catalog, default_database, MyTable]], fields=[a, b, c])
+]]>
+    </Resource>
+  </TestCase>
+  <TestCase name="testManagedTableSinkWithDisableCheckpointing">
+    <Resource name="ast">
+      <![CDATA[
+LogicalSink(table=[default_catalog.default_database.sink], fields=[a, b, c])
++- LogicalProject(a=[$0], b=[$1], c=[$2])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
 ]]>
     </Resource>
   </TestCase>
@@ -62,17 +80,19 @@ Sink(table=[default_catalog.default_database.sink], fields=[cnt])
       <![CDATA[
 LogicalSink(table=[default_catalog.default_database.sink1], fields=[total_sum])
 +- LogicalAggregate(group=[{}], total_sum=[SUM($0)])
-   +- LogicalProject(sum_a=[$1])
-      +- LogicalAggregate(group=[{0}], sum_a=[SUM($1)])
-         +- LogicalProject(c=[$2], a=[$0])
-            +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+   +- LogicalProject(sum_a=[$0])
+      +- LogicalProject(sum_a=[$1], c=[$0])
+         +- LogicalAggregate(group=[{0}], sum_a=[SUM($1)])
+            +- LogicalProject(c=[$2], a=[$0])
+               +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
 
 LogicalSink(table=[default_catalog.default_database.sink2], fields=[total_min])
 +- LogicalAggregate(group=[{}], total_min=[MIN($0)])
-   +- LogicalProject(sum_a=[$1])
-      +- LogicalAggregate(group=[{0}], sum_a=[SUM($1)])
-         +- LogicalProject(c=[$2], a=[$0])
-            +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
+   +- LogicalProject(sum_a=[$0])
+      +- LogicalProject(sum_a=[$1], c=[$0])
+         +- LogicalAggregate(group=[{0}], sum_a=[SUM($1)])
+            +- LogicalProject(c=[$2], a=[$0])
+               +- LogicalTableScan(table=[[default_catalog, default_database, MyTable]])
 ]]>
     </Resource>
     <Resource name="optimized exec plan">

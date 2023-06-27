@@ -30,6 +30,8 @@ import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -466,6 +468,7 @@ public final class InstantiationUtil {
         }
     }
 
+    @Nullable
     public static <T> T readObjectFromConfig(Configuration config, String key, ClassLoader cl)
             throws IOException, ClassNotFoundException {
         byte[] bytes = config.getBytes(key, null);
@@ -618,6 +621,22 @@ public final class InstantiationUtil {
         } else {
             final byte[] serializedObject = serializeObject(obj);
             return deserializeObject(serializedObject, classLoader);
+        }
+    }
+
+    /**
+     * Unchecked equivalent of {@link #clone(Serializable)}.
+     *
+     * @param obj Object to clone
+     * @param <T> Type of the object to clone
+     * @return The cloned object
+     */
+    public static <T extends Serializable> T cloneUnchecked(T obj) {
+        try {
+            return clone(obj, obj.getClass().getClassLoader());
+        } catch (IOException | ClassNotFoundException e) {
+            throw new RuntimeException(
+                    String.format("Unable to clone instance of %s.", obj.getClass().getName()), e);
         }
     }
 

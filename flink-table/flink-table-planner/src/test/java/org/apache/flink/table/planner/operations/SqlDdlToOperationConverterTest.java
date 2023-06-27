@@ -32,11 +32,13 @@ import org.apache.flink.table.catalog.CatalogDatabaseImpl;
 import org.apache.flink.table.catalog.CatalogFunction;
 import org.apache.flink.table.catalog.CatalogFunctionImpl;
 import org.apache.flink.table.catalog.CatalogTable;
+import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ContextResolvedTable;
 import org.apache.flink.table.catalog.FunctionLanguage;
 import org.apache.flink.table.catalog.GenericInMemoryCatalog;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.ObjectPath;
+import org.apache.flink.table.catalog.ResolvedCatalogTable;
 import org.apache.flink.table.catalog.TableChange;
 import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
 import org.apache.flink.table.catalog.exceptions.FunctionAlreadyExistException;
@@ -46,6 +48,7 @@ import org.apache.flink.table.operations.NopOperation;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.SinkModifyOperation;
 import org.apache.flink.table.operations.SourceQueryOperation;
+import org.apache.flink.table.operations.ddl.AddPartitionsOperation;
 import org.apache.flink.table.operations.ddl.AlterDatabaseOperation;
 import org.apache.flink.table.operations.ddl.AlterTableChangeOperation;
 import org.apache.flink.table.operations.ddl.AlterTableRenameOperation;
@@ -55,6 +58,7 @@ import org.apache.flink.table.operations.ddl.CreateTableOperation;
 import org.apache.flink.table.operations.ddl.CreateTempSystemFunctionOperation;
 import org.apache.flink.table.operations.ddl.CreateViewOperation;
 import org.apache.flink.table.operations.ddl.DropDatabaseOperation;
+import org.apache.flink.table.operations.ddl.DropPartitionsOperation;
 import org.apache.flink.table.planner.calcite.FlinkPlannerImpl;
 import org.apache.flink.table.planner.expressions.utils.Func0$;
 import org.apache.flink.table.planner.expressions.utils.Func1$;
@@ -76,6 +80,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -89,8 +94,8 @@ import static org.apache.flink.table.planner.utils.OperationMatchers.withSchema;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Test cases for the DDL statements for {@link SqlToOperationConverter}. */
-public class SqlDdlToOperationConverterTest extends SqlToOperationConverterTestBase {
+/** Test cases for the DDL statements for {@link SqlNodeToOperationConversion}. */
+public class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBase {
 
     @Test
     public void testCreateDatabase() {
@@ -185,7 +190,7 @@ public class SqlDdlToOperationConverterTest extends SqlToOperationConverterTestB
     public void testCreateTable() {
         final String sql =
                 "CREATE TABLE tbl1 (\n"
-                        + "  a bigint,\n"
+                        + "  a bigint comment 'column a',\n"
                         + "  b varchar, \n"
                         + "  c int, \n"
                         + "  d varchar"
@@ -211,6 +216,15 @@ public class SqlDdlToOperationConverterTest extends SqlToOperationConverterTestB
                             DataTypes.VARCHAR(Integer.MAX_VALUE),
                             DataTypes.INT(),
                             DataTypes.VARCHAR(Integer.MAX_VALUE)
+                        });
+        assertThat(catalogTable).isInstanceOf(ResolvedCatalogTable.class);
+        ResolvedCatalogTable resolvedCatalogTable = (ResolvedCatalogTable) catalogTable;
+        resolvedCatalogTable
+                .getResolvedSchema()
+                .getColumn(0)
+                .ifPresent(
+                        (Column column) -> {
+                            assertThat(column.getComment()).isEqualTo(Optional.of("column a"));
                         });
     }
 
@@ -305,7 +319,8 @@ public class SqlDdlToOperationConverterTest extends SqlToOperationConverterTestB
         final CalciteParser parser = getParserBySqlDialect(SqlDialect.DEFAULT);
         SqlNode node = parser.parse(sql);
         assertThat(node).isInstanceOf(SqlCreateTable.class);
-        Operation operation = SqlToOperationConverter.convert(planner, catalogManager, node).get();
+        Operation operation =
+                SqlNodeToOperationConversion.convert(planner, catalogManager, node).get();
         assertThat(operation).isInstanceOf(CreateTableOperation.class);
         CreateTableOperation op = (CreateTableOperation) operation;
         CatalogTable catalogTable = op.getCatalogTable();
@@ -341,7 +356,8 @@ public class SqlDdlToOperationConverterTest extends SqlToOperationConverterTestB
         SqlNode node = parser.parse(sql);
         assertThat(node).isInstanceOf(SqlCreateTable.class);
 
-        Operation operation = SqlToOperationConverter.convert(planner, catalogManager, node).get();
+        Operation operation =
+                SqlNodeToOperationConversion.convert(planner, catalogManager, node).get();
         assertThat(operation).isInstanceOf(CreateTableOperation.class);
         CreateTableOperation op = (CreateTableOperation) operation;
         CatalogTable catalogTable = op.getCatalogTable();
@@ -753,7 +769,8 @@ public class SqlDdlToOperationConverterTest extends SqlToOperationConverterTestB
         final CalciteParser parser = getParserBySqlDialect(SqlDialect.DEFAULT);
         SqlNode node = parser.parse(sql);
         assertThat(node).isInstanceOf(SqlCreateTable.class);
-        Operation operation = SqlToOperationConverter.convert(planner, catalogManager, node).get();
+        Operation operation =
+                SqlNodeToOperationConversion.convert(planner, catalogManager, node).get();
         TableSchema schema = ((CreateTableOperation) operation).getCatalogTable().getSchema();
         Object[] expectedDataTypes = testItems.stream().map(item -> item.expectedType).toArray();
         assertThat(schema.getFieldDataTypes()).isEqualTo(expectedDataTypes);
@@ -2150,6 +2167,52 @@ public class SqlDdlToOperationConverterTest extends SqlToOperationConverterTestB
         assertThat(operation).isInstanceOf(CreateViewOperation.class);
     }
 
+    @Test
+    public void testAlterTableAddPartitions() throws Exception {
+        prepareTable("tb1", false, true, true, 0);
+
+        // test add single partition
+        Operation operation = parse("alter table tb1 add partition (b = '1', c = '2')");
+        assertThat(operation).isInstanceOf(AddPartitionsOperation.class);
+        assertThat(operation.asSummaryString())
+                .isEqualTo("ALTER TABLE cat1.db1.tb1 ADD PARTITION (b=1, c=2)");
+
+        // test add single partition with property
+        operation = parse("alter table tb1 add partition (b = '1', c = '2') with ('k' = 'v')");
+        assertThat(operation).isInstanceOf(AddPartitionsOperation.class);
+        assertThat(operation.asSummaryString())
+                .isEqualTo("ALTER TABLE cat1.db1.tb1 ADD PARTITION (b=1, c=2) WITH (k: [v])");
+
+        // test add multiple partition simultaneously
+        operation =
+                parse(
+                        "alter table tb1 add if not exists partition (b = '1', c = '2') with ('k' = 'v') "
+                                + "partition (b = '2')");
+        assertThat(operation).isInstanceOf(AddPartitionsOperation.class);
+        assertThat(operation.asSummaryString())
+                .isEqualTo(
+                        "ALTER TABLE cat1.db1.tb1 ADD IF NOT EXISTS PARTITION (b=1, c=2) WITH (k: [v]) PARTITION (b=2)");
+    }
+
+    @Test
+    public void testAlterTableDropPartitions() throws Exception {
+        prepareTable("tb1", false, true, true, 0);
+        // test drop single partition
+        Operation operation = parse("alter table tb1 drop partition (b = '1', c = '2')");
+        assertThat(operation).isInstanceOf(DropPartitionsOperation.class);
+        assertThat(operation.asSummaryString())
+                .isEqualTo("ALTER TABLE cat1.db1.tb1 DROP PARTITION (b=1, c=2)");
+
+        // test drop multiple partition simultaneously
+        operation =
+                parse(
+                        "alter table tb1 drop if exists partition (b = '1', c = '2'), partition (b = '2')");
+        assertThat(operation).isInstanceOf(DropPartitionsOperation.class);
+        assertThat(operation.asSummaryString())
+                .isEqualTo(
+                        "ALTER TABLE cat1.db1.tb1 DROP IF EXISTS PARTITION (b=1, c=2) PARTITION (b=2)");
+    }
+
     // ~ Tool Methods ----------------------------------------------------------
 
     private static TestItem createTestItem(Object... args) {
@@ -2340,6 +2403,6 @@ public class SqlDdlToOperationConverterTest extends SqlToOperationConverterTestB
         final CalciteParser parser = getParserBySqlDialect(SqlDialect.DEFAULT);
 
         SqlNode node = parser.parse(sql);
-        return SqlToOperationConverter.convert(planner, catalogManager, node).get();
+        return SqlNodeToOperationConversion.convert(planner, catalogManager, node).get();
     }
 }

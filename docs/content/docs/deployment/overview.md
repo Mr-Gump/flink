@@ -295,22 +295,15 @@ Supported Environments:
 Supported Environments:
 {{< label AWS >}}
 
-#### Cloudera DataFlow
+#### Cloudera Stream Processing
 
-[Website](https://www.cloudera.com/products/cdf.html)
+[Website](https://www.cloudera.com/products/stream-processing.html)
 
 Supported Environment:
 {{< label AWS >}}
 {{< label Azure >}}
 {{< label Google Cloud >}}
 {{< label On-Premise >}}
-
-#### Eventador
-
-[Website](https://eventador.io)
-
-Supported Environment:
-{{< label AWS >}}
 
 #### Huawei Cloud Stream Service
 
@@ -321,7 +314,7 @@ Supported Environment:
 
 #### Ververica Platform
 
-[Website](https://www.ververica.com/platform-overview)
+[Website](https://www.ververica.com/platform)
 
 Supported Environments:
 {{< label AliCloud >}}

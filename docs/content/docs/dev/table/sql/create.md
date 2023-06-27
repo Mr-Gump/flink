@@ -316,7 +316,7 @@ CREATE TABLE MyTable (
   `user_id` BIGINT,
   `price` DOUBLE,
   `quantity` DOUBLE,
-  `cost` AS price * quanitity,  -- evaluate expression and supply the result to queries
+  `cost` AS price * quantity  -- evaluate expression and supply the result to queries
 ) WITH (
   'connector' = 'kafka'
   ...
@@ -482,7 +482,7 @@ CREATE TABLE Orders_in_file (
     `user` BIGINT,
     product STRING,
     order_time_string STRING,
-    order_time AS to_timestamp(order_time)
+    order_time AS to_timestamp(order_time_string)
     
 )
 PARTITIONED BY (`user`) 

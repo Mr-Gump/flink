@@ -208,7 +208,7 @@ public class RemoteInputChannel extends InputChannel {
     }
 
     @Override
-    Optional<BufferAndAvailability> getNextBuffer() throws IOException {
+    public Optional<BufferAndAvailability> getNextBuffer() throws IOException {
         checkPartitionRequestQueueInitialized();
 
         final SequenceBuffer next;
@@ -811,6 +811,13 @@ public class RemoteInputChannel extends InputChannel {
         checkState(
                 partitionRequestClient != null,
                 "Bug: partitionRequestClient is not initialized before processing data and no error is detected.");
+    }
+
+    @Override
+    public void notifyRequiredSegmentId(int segmentId) throws IOException {
+        checkState(!isReleased.get(), "Channel released.");
+        checkPartitionRequestQueueInitialized();
+        partitionRequestClient.notifyRequiredSegmentId(this, segmentId);
     }
 
     private static class BufferReorderingException extends IOException {

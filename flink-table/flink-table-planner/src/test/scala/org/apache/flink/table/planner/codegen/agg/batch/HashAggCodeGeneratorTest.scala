@@ -18,6 +18,7 @@
 package org.apache.flink.table.planner.codegen.agg.batch
 
 import org.apache.flink.table.api.DataTypes
+import org.apache.flink.table.api.config.ExecutionConfigOptions
 import org.apache.flink.table.data.RowData
 import org.apache.flink.table.planner.functions.aggfunctions.AvgAggFunction.LongAvgAggFunction
 import org.apache.flink.table.planner.plan.utils.{AggregateInfo, AggregateInfoList}
@@ -26,7 +27,7 @@ import org.apache.flink.table.types.logical._
 
 import org.apache.calcite.rel.core.AggregateCall
 import org.junit.Test
-import org.powermock.api.mockito.PowerMockito.{mock, when}
+import org.mockito.Mockito.{mock, when}
 
 /** Test for [[HashAggCodeGenerator]]. */
 class HashAggCodeGeneratorTest extends BatchAggTestBase {
@@ -56,12 +57,12 @@ class HashAggCodeGeneratorTest extends BatchAggTestBase {
   override val aggInfo3: AggregateInfo = {
     val aggInfo = mock(classOf[AggregateInfo])
     val call = mock(classOf[AggregateCall])
-    when(aggInfo, "agg").thenReturn(call)
-    when(call, "getName").thenReturn("avg3")
-    when(aggInfo, "function").thenReturn(new LongAvgAggFunction)
-    when(aggInfo, "externalAccTypes").thenReturn(Array(DataTypes.BIGINT, DataTypes.BIGINT))
-    when(aggInfo, "argIndexes").thenReturn(Array(3))
-    when(aggInfo, "aggIndex").thenReturn(2)
+    when(aggInfo.agg).thenReturn(call)
+    when(call.getName).thenReturn("avg3")
+    when(aggInfo.function).thenReturn(new LongAvgAggFunction)
+    when(aggInfo.externalAccTypes).thenReturn(Array(DataTypes.BIGINT, DataTypes.BIGINT))
+    when(aggInfo.argIndexes).thenReturn(Array(3))
+    when(aggInfo.aggIndex).thenReturn(2)
     aggInfo
   }
 
@@ -134,7 +135,11 @@ class HashAggCodeGeneratorTest extends BatchAggTestBase {
       auxGrouping,
       isMerge,
       isFinal,
-      false)
+      false,
+      ExecutionConfigOptions.TABLE_EXEC_SORT_MAX_NUM_FILE_HANDLES.defaultValue(),
+      ExecutionConfigOptions.TABLE_EXEC_SPILL_COMPRESSION_ENABLED.defaultValue,
+      ExecutionConfigOptions.TABLE_EXEC_SPILL_COMPRESSION_BLOCK_SIZE.defaultValue.getBytes.toInt
+    )
     (new CodeGenOperatorFactory[RowData](genOp), iType, oType)
   }
 

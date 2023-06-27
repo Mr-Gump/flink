@@ -48,31 +48,28 @@ class SessionContextTest {
     private SessionContext sessionContext;
 
     @BeforeEach
-    public void setup() {
+    void setup() {
         sessionContext = createSessionContext();
     }
 
     @AfterEach
-    public void cleanUp() {
+    void cleanUp() {
         sessionContext.close();
     }
 
     @AfterAll
-    public static void closeResources() {
+    static void closeResources() {
         EXECUTOR_SERVICE.shutdown();
     }
 
     @Test
-    public void testSetAndResetOption() {
-        // table config option
-        sessionContext.set(TABLE_SQL_DIALECT.key(), "hive");
+    void testSetAndResetOption() {
         // runtime config option
         sessionContext.set(MAX_PARALLELISM.key(), "128");
         // runtime config option and doesn't have default value
         sessionContext.set(NAME.key(), "test");
         // runtime config from flink-conf
         sessionContext.set(OBJECT_REUSE.key(), "false");
-        assertThat(sessionContext.getSessionConf().get(TABLE_SQL_DIALECT)).isEqualTo("hive");
         assertThat(sessionContext.getSessionConf().get(MAX_PARALLELISM)).isEqualTo(128);
         assertThat(sessionContext.getSessionConf().get(NAME)).isEqualTo("test");
         assertThat(sessionContext.getSessionConf().get(OBJECT_REUSE)).isFalse();
@@ -88,9 +85,7 @@ class SessionContextTest {
     }
 
     @Test
-    public void testSetAndResetKeyInConfigOptions() {
-        // table config option
-        sessionContext.set(TABLE_SQL_DIALECT.key(), "hive");
+    void testSetAndResetKeyInConfigOptions() {
         // runtime config option
         sessionContext.set(MAX_PARALLELISM.key(), "128");
         // runtime config option and doesn't have default value
@@ -98,7 +93,6 @@ class SessionContextTest {
         // runtime config from flink-conf
         sessionContext.set(OBJECT_REUSE.key(), "false");
 
-        assertThat(sessionContext.getSessionConf().get(TABLE_SQL_DIALECT)).isEqualTo("hive");
         assertThat(sessionContext.getSessionConf().get(MAX_PARALLELISM)).isEqualTo(128);
         assertThat(sessionContext.getSessionConf().get(NAME)).isEqualTo("test");
         assertThat(sessionContext.getSessionConf().get(OBJECT_REUSE)).isFalse();
@@ -117,7 +111,7 @@ class SessionContextTest {
     }
 
     @Test
-    public void testSetAndResetArbitraryKey() {
+    void testSetAndResetArbitraryKey() {
         // other property not in flink-conf
         sessionContext.set("aa", "11");
         sessionContext.set("bb", "22");

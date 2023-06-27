@@ -105,8 +105,10 @@ object HashAggCodeGenerator {
       auxGrouping: Array[Int],
       isMerge: Boolean,
       isFinal: Boolean,
-      supportAdaptiveLocalHashAgg: Boolean)
-      : GeneratedOperator[OneInputStreamOperator[RowData, RowData]] = {
+      supportAdaptiveLocalHashAgg: Boolean,
+      maxNumFileHandles: Int,
+      compressionEnabled: Boolean,
+      compressionBlockSize: Int): GeneratedOperator[OneInputStreamOperator[RowData, RowData]] = {
 
     val aggInfos = aggInfoList.aggInfos
     val functionIdentifiers = AggCodeGenHelper.getFunctionIdentifiers(aggInfos)
@@ -139,21 +141,6 @@ object HashAggCodeGenerator {
         outRecordTerm = currentKeyTerm,
         outRecordWriterTerm = currentKeyWriterTerm)
       .code
-
-    val valueProjectionCode =
-      if (!isFinal && supportAdaptiveLocalHashAgg) {
-        ProjectionCodeGenerator.genAdaptiveLocalHashAggValueProjectionCode(
-          ctx,
-          inputType,
-          classOf[BinaryRowData],
-          inputTerm = inputTerm,
-          aggInfos,
-          outRecordTerm = currentValueTerm,
-          outRecordWriterTerm = currentValueWriterTerm
-        )
-      } else {
-        ""
-      }
 
     // gen code to create groupKey, aggBuffer Type array
     // it will be used in BytesHashMap and BufferedKVExternalSorter if enable fallback
@@ -238,7 +225,10 @@ object HashAggCodeGenerator {
       outputType,
       outputResultFromMap,
       sorterTerm,
-      retryAppend
+      retryAppend,
+      maxNumFileHandles,
+      compressionEnabled,
+      compressionBlockSize
     )
 
     HashAggCodeGenHelper.prepareMetrics(ctx, aggregateMapTerm, if (isFinal) sorterTerm else null)
@@ -259,6 +249,21 @@ object HashAggCodeGenerator {
     }
     val localAggSuppressedTerm = CodeGenUtils.newName("localAggSuppressed")
     ctx.addReusableMember(s"private transient boolean $localAggSuppressedTerm = false;")
+    val valueProjectionCode =
+      if (!isFinal && supportAdaptiveLocalHashAgg) {
+        ProjectionCodeGenerator.genAdaptiveLocalHashAggValueProjectionCode(
+          ctx,
+          inputType,
+          classOf[BinaryRowData],
+          inputTerm = inputTerm,
+          aggInfos,
+          outRecordTerm = currentValueTerm,
+          outRecordWriterTerm = currentValueWriterTerm
+        )
+      } else {
+        ""
+      }
+
     val (
       distinctCountIncCode,
       totalCountIncCode,

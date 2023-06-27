@@ -22,13 +22,17 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.table.api.Schema;
-import org.apache.flink.table.api.TableSchema;
-import org.apache.flink.table.catalog.CatalogManager;
+import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.calcite.bridge.CalciteContext;
+import org.apache.flink.table.calcite.bridge.PlannerExternalQueryOperation;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogPropertiesUtil;
+import org.apache.flink.table.catalog.CatalogRegistry;
 import org.apache.flink.table.catalog.CatalogTable;
+import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ContextResolvedTable;
 import org.apache.flink.table.catalog.ObjectIdentifier;
+import org.apache.flink.table.catalog.ResolvedCatalogBaseTable;
 import org.apache.flink.table.catalog.ResolvedCatalogTable;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.hive.factories.HiveCatalogFactoryOptions;
@@ -38,16 +42,15 @@ import org.apache.flink.table.module.hive.udf.generic.HiveGenericUDFToDecimal;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.QueryOperation;
 import org.apache.flink.table.operations.SinkModifyOperation;
-import org.apache.flink.table.planner.delegation.PlannerContext;
 import org.apache.flink.table.planner.delegation.hive.copy.HiveParserBaseSemanticAnalyzer;
 import org.apache.flink.table.planner.delegation.hive.copy.HiveParserDirectoryDesc;
 import org.apache.flink.table.planner.delegation.hive.copy.HiveParserQB;
 import org.apache.flink.table.planner.delegation.hive.copy.HiveParserSqlFunctionConverter;
 import org.apache.flink.table.planner.delegation.hive.copy.HiveParserTypeConverter;
 import org.apache.flink.table.planner.delegation.hive.parse.HiveParserDDLSemanticAnalyzer;
-import org.apache.flink.table.planner.operations.PlannerQueryOperation;
 import org.apache.flink.table.planner.plan.nodes.hive.LogicalDistribution;
 import org.apache.flink.table.planner.plan.nodes.hive.LogicalScriptTransform;
+import org.apache.flink.table.planner.utils.TableSchemaUtils;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.util.Preconditions;
 
@@ -90,24 +93,24 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.TABLE_LOCATION_URI;
+import static org.apache.flink.table.catalog.hive.util.Constants.TABLE_LOCATION_URI;
 import static org.apache.flink.table.planner.delegation.hive.HiveParserConstants.IS_INSERT_DIRECTORY;
 import static org.apache.flink.table.planner.delegation.hive.HiveParserConstants.IS_TO_LOCAL_DIRECTORY;
 
 /** A helper class to handle DMLs in hive dialect. */
 public class HiveParserDMLHelper {
 
-    private final PlannerContext plannerContext;
+    private final CalciteContext calciteContext;
     private final SqlFunctionConverter funcConverter;
-    private final CatalogManager catalogManager;
+    private final CatalogRegistry catalogRegistry;
 
     public HiveParserDMLHelper(
-            PlannerContext plannerContext,
+            CalciteContext calciteContext,
             SqlFunctionConverter funcConverter,
-            CatalogManager catalogManager) {
-        this.plannerContext = plannerContext;
+            CatalogRegistry catalogRegistry) {
+        this.calciteContext = calciteContext;
         this.funcConverter = funcConverter;
-        this.catalogManager = catalogManager;
+        this.catalogRegistry = catalogRegistry;
     }
 
     public Tuple4<ObjectIdentifier, QueryOperation, Map<String, String>, Boolean>
@@ -151,14 +154,14 @@ public class HiveParserDMLHelper {
                         (SingleRel) queryRelNode, destTable, destSchema, staticPartSpec.keySet());
 
         // track each target col and its expected type
-        RelDataTypeFactory typeFactory = plannerContext.getTypeFactory();
+        RelDataTypeFactory typeFactory = calciteContext.getTypeFactory();
         LinkedHashMap<String, RelDataType> targetColToCalcType = new LinkedHashMap<>();
         List<TypeInfo> targetHiveTypes = new ArrayList<>();
-        TableSchema tableSchema =
-                HiveParserUtils.fromUnresolvedSchema(destTable.getUnresolvedSchema());
-        String[] fieldNames = tableSchema.getFieldNames();
+        ResolvedSchema resolvedSchema = ((ResolvedCatalogTable) destTable).getResolvedSchema();
+        String[] fieldNames = resolvedSchema.getColumnNames().toArray(new String[] {});
         for (String fieldName : fieldNames) {
-            Optional<DataType> dataType = tableSchema.getFieldDataType(fieldName);
+            Optional<DataType> dataType =
+                    resolvedSchema.getColumn(fieldName).map(Column::getDataType);
             TypeInfo hiveType =
                     HiveTypeUtil.toHiveTypeInfo(
                             dataType.orElseThrow(
@@ -238,7 +241,7 @@ public class HiveParserDMLHelper {
         // add type conversions
         queryRelNode =
                 addTypeConversions(
-                        plannerContext.getCluster().getRexBuilder(),
+                        calciteContext.getCluster().getRexBuilder(),
                         queryRelNode,
                         new ArrayList<>(targetColToCalcType.values()),
                         targetHiveTypes,
@@ -247,7 +250,8 @@ public class HiveParserDMLHelper {
 
         return Tuple4.of(
                 destTableIdentifier,
-                new PlannerQueryOperation(queryRelNode),
+                new PlannerExternalQueryOperation(
+                        queryRelNode, TableSchemaUtils.resolvedSchema(queryRelNode)),
                 staticPartSpec,
                 overwrite);
     }
@@ -331,17 +335,46 @@ public class HiveParserDMLHelper {
                 createInsertOperationInfo(
                         queryRelNode,
                         destTable,
-                        HiveParserBaseSemanticAnalyzer.parseCompoundName(catalogManager, tableName),
+                        HiveParserBaseSemanticAnalyzer.parseCompoundName(
+                                catalogRegistry, tableName),
                         staticPartSpec,
                         analyzer.getDestSchemaForClause(insClauseName),
                         overwrite);
 
         return new SinkModifyOperation(
-                catalogManager.getTableOrError(insertOperationInfo.f0),
+                getContextResolvedTable(insertOperationInfo.f0),
                 insertOperationInfo.f1,
                 insertOperationInfo.f2,
+                null, // targetColumns
                 insertOperationInfo.f3,
                 Collections.emptyMap());
+    }
+
+    private ContextResolvedTable getContextResolvedTable(ObjectIdentifier tableIdentifier) {
+        ResolvedCatalogBaseTable<?> resolvedCatalogBaseTable = getTableOrError(tableIdentifier);
+        ContextResolvedTable contextResolvedTable;
+        if (catalogRegistry.isTemporaryTable(tableIdentifier)) {
+            contextResolvedTable =
+                    ContextResolvedTable.temporary(tableIdentifier, resolvedCatalogBaseTable);
+        } else {
+            contextResolvedTable =
+                    ContextResolvedTable.permanent(
+                            tableIdentifier,
+                            catalogRegistry.getCatalogOrError(tableIdentifier.getCatalogName()),
+                            resolvedCatalogBaseTable);
+        }
+        return contextResolvedTable;
+    }
+
+    private ResolvedCatalogBaseTable<?> getTableOrError(ObjectIdentifier tableIdentifier) {
+        Optional<ResolvedCatalogBaseTable<?>> table =
+                catalogRegistry.getCatalogBaseTable(tableIdentifier);
+        return table.orElseThrow(
+                () ->
+                        new TableException(
+                                String.format(
+                                        "Cannot find table '%s' in any of the catalogs, nor as a temporary table.",
+                                        tableIdentifier)));
     }
 
     private SinkModifyOperation createInsertIntoDirectoryOperation(
@@ -386,12 +419,15 @@ public class HiveParserDMLHelper {
         props.put("columns", colNames);
         props.put("columns.types", colTypes);
 
-        PlannerQueryOperation plannerQueryOperation = new PlannerQueryOperation(queryRelNode);
+        PlannerExternalQueryOperation plannerQueryOperation =
+                new PlannerExternalQueryOperation(
+                        queryRelNode, TableSchemaUtils.resolvedSchema(queryRelNode));
         return new SinkModifyOperation(
                 createDummyTableForInsertDirectory(
                         plannerQueryOperation.getResolvedSchema(), props),
                 plannerQueryOperation,
                 Collections.emptyMap(),
+                null, // targetColumns
                 true, // insert into directory is always for overwrite
                 Collections.emptyMap());
     }
@@ -407,13 +443,13 @@ public class HiveParserDMLHelper {
                         props);
         ResolvedCatalogTable resolvedCatalogTable =
                 new ResolvedCatalogTable(catalogTable, resolvedSchema);
-        String currentCatalog = catalogManager.getCurrentCatalog();
+        String currentCatalog = catalogRegistry.getCurrentCatalog();
         // the object name means nothing, it's just for placeholder and won't be used actually
         String objectName = "insert_directory_tbl";
         return ContextResolvedTable.permanent(
                 ObjectIdentifier.of(
-                        currentCatalog, catalogManager.getCurrentDatabase(), objectName),
-                catalogManager.getCatalog(currentCatalog).get(),
+                        currentCatalog, catalogRegistry.getCurrentDatabase(), objectName),
+                catalogRegistry.getCatalogOrError(catalogRegistry.getCurrentCatalog()),
                 resolvedCatalogTable);
     }
 
@@ -463,7 +499,7 @@ public class HiveParserDMLHelper {
             }
             shiftedCollations.add(fieldCollation);
         }
-        return plannerContext.getCluster().traitSet().canonize(RelCollations.of(shiftedCollations));
+        return calciteContext.getCluster().traitSet().canonize(RelCollations.of(shiftedCollations));
     }
 
     static RelNode addTypeConversions(
@@ -682,11 +718,11 @@ public class HiveParserDMLHelper {
             return queryRelNode;
         }
 
+        ResolvedCatalogTable resolvedCatalogTable = (ResolvedCatalogTable) destTable;
         // natural schema should contain regular cols + dynamic cols
-        TableSchema tableSchema =
-                HiveParserUtils.fromUnresolvedSchema(destTable.getUnresolvedSchema());
+        ResolvedSchema resolvedSchema = resolvedCatalogTable.getResolvedSchema();
         List<String> naturalSchema = new ArrayList<>();
-        for (String fieldName : tableSchema.getFieldNames()) {
+        for (String fieldName : resolvedSchema.getColumnNames()) {
             // only add no partition cols and dynamic partition cols
             if (!staticParts.contains(fieldName)) {
                 naturalSchema.add(fieldName);
@@ -703,7 +739,8 @@ public class HiveParserDMLHelper {
         for (String col : naturalSchema) {
             int index = destSchema.indexOf(col);
             if (index < 0) {
-                Optional<DataType> dataType = tableSchema.getFieldDataType(col);
+                Optional<DataType> dataType =
+                        resolvedSchema.getColumn(col).map(Column::getDataType);
                 TypeInfo hiveType =
                         HiveTypeUtil.toHiveTypeInfo(
                                 dataType.orElseThrow(
@@ -714,7 +751,7 @@ public class HiveParserDMLHelper {
                                                                 col))),
                                 false);
                 updatedIndices.add(
-                        HiveParserTypeConverter.convert(hiveType, plannerContext.getTypeFactory()));
+                        HiveParserTypeConverter.convert(hiveType, calciteContext.getTypeFactory()));
             } else {
                 updatedIndices.add(index);
             }
@@ -785,7 +822,7 @@ public class HiveParserDMLHelper {
             fieldCollation = fieldCollation.withFieldIndex(newIndex);
             updatedCollations.add(fieldCollation);
         }
-        return plannerContext.getCluster().traitSet().canonize(RelCollations.of(updatedCollations));
+        return calciteContext.getCluster().traitSet().canonize(RelCollations.of(updatedCollations));
     }
 
     private List<Integer> updateDistKeys(List<Integer> distKeys, List<Object> updatedIndices) {
@@ -843,7 +880,7 @@ public class HiveParserDMLHelper {
             Map<String, String> staticPartSpec,
             CatalogTable destTable,
             Map<String, RelDataType> targetColToType) {
-        RexBuilder rexBuilder = plannerContext.getCluster().getRexBuilder();
+        RexBuilder rexBuilder = calciteContext.getCluster().getRexBuilder();
         List<RexNode> originRexNodes =
                 IntStream.range(0, logicalScriptTransform.getRowType().getFieldCount())
                         .mapToObj(i -> rexBuilder.makeInputRef(logicalScriptTransform, i))
@@ -864,7 +901,7 @@ public class HiveParserDMLHelper {
             CatalogTable destTable,
             Map<String, RelDataType> targetColToType) {
         List<RexNode> extendedRexNodes = new ArrayList<>(originRexNodes);
-        RexBuilder rexBuilder = plannerContext.getCluster().getRexBuilder();
+        RexBuilder rexBuilder = calciteContext.getCluster().getRexBuilder();
         int numDynmPart = destTable.getPartitionKeys().size() - staticPartSpec.size();
         int insertIndex = originRexNodes.size() - numDynmPart;
         for (Map.Entry<String, String> spec : staticPartSpec.entrySet()) {
@@ -906,7 +943,7 @@ public class HiveParserDMLHelper {
                             destSchemaSize, selectSize));
         }
         List<RexNode> exprs = new ArrayList<>(updatedIndices.size());
-        RexBuilder rexBuilder = plannerContext.getCluster().getRexBuilder();
+        RexBuilder rexBuilder = calciteContext.getCluster().getRexBuilder();
         for (Object object : updatedIndices) {
             if (object instanceof Integer) {
                 exprs.add(rexBuilder.makeInputRef(input, (Integer) object));

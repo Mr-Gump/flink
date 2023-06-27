@@ -98,10 +98,11 @@ LogicalProject(a=[$1], b=[$2], c=[$3])
 Calc(select=[a, b, c], where=[>(a, 1)], changelogMode=[I,UB,UA,D])
 +- ChangelogNormalize(key=[id], changelogMode=[I,UB,UA,D])
    +- Exchange(distribution=[hash[id]], changelogMode=[I,UA,D])
-      +- WatermarkAssigner(rowtime=[ts], watermark=[-(ts, 1000:INTERVAL SECOND)], changelogMode=[I,UA,D])
-         +- Calc(select=[id, a, +(a, 1) AS b, c, TO_TIMESTAMP(c) AS ts], changelogMode=[I,UA,D])
-            +- DropUpdateBefore(changelogMode=[I,UA,D])
-               +- TableSourceScan(table=[[default_catalog, default_database, src]], fields=[id, a, c], changelogMode=[I,UB,UA,D])
+      +- Calc(select=[id, a, b, c], changelogMode=[I,UA,D])
+         +- WatermarkAssigner(rowtime=[ts], watermark=[-(ts, 1000:INTERVAL SECOND)], changelogMode=[I,UA,D])
+            +- Calc(select=[id, a, +(a, 1) AS b, c, TO_TIMESTAMP(c) AS ts], changelogMode=[I,UA,D])
+               +- DropUpdateBefore(changelogMode=[I,UA,D])
+                  +- TableSourceScan(table=[[default_catalog, default_database, src]], fields=[id, a, c], changelogMode=[I,UB,UA,D])
 ]]>
     </Resource>
   </TestCase>
@@ -147,8 +148,9 @@ Calc(select=[ts, a, b], where=[(a > 1)])
     </Resource>
     <Resource name="ast">
       <![CDATA[
-LogicalProject(a=[$0], b=[$1], c=[+($0, 1)], d=[TO_TIMESTAMP($1)], e=[my_udf($0)])
-+- LogicalTableScan(table=[[default_catalog, default_database, t1]])
+LogicalProject(a=[$0], b=[$1], c=[$2], d=[$3], e=[$4])
++- LogicalProject(a=[$0], b=[$1], c=[+($0, 1)], d=[TO_TIMESTAMP($1)], e=[my_udf($0)])
+   +- LogicalTableScan(table=[[default_catalog, default_database, t1]])
 ]]>
     </Resource>
     <Resource name="optimized exec plan">
@@ -186,8 +188,9 @@ Calc(select=[ts, a, b, my_ts, PROCTIME_MATERIALIZE(proc) AS proc], where=[(a > 1
     </Resource>
     <Resource name="ast">
       <![CDATA[
-LogicalProject(a=[$0], other_metadata=[CAST($4):INTEGER], b=[$1], c=[$2], metadata_1=[$3], computed=[UPPER($3)])
-+- LogicalTableScan(table=[[default_catalog, default_database, MetadataTable]])
+LogicalProject(a=[$0], other_metadata=[$1], b=[$2], c=[$3], metadata_1=[$4], computed=[$5])
++- LogicalProject(a=[$0], other_metadata=[CAST($4):INTEGER], b=[$1], c=[$2], metadata_1=[$3], computed=[UPPER($3)])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MetadataTable]])
 ]]>
     </Resource>
     <Resource name="optimized exec plan">
@@ -203,8 +206,9 @@ Calc(select=[a, CAST(other_metadata AS INTEGER) AS other_metadata, b, c, metadat
     </Resource>
     <Resource name="ast">
       <![CDATA[
-LogicalProject(b=[$1], other_metadata=[CAST($4):INTEGER])
-+- LogicalTableScan(table=[[default_catalog, default_database, MetadataTable]])
+LogicalProject(b=[$2], other_metadata=[$1])
++- LogicalProject(a=[$0], other_metadata=[CAST($4):INTEGER], b=[$1], c=[$2], metadata_1=[$3])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MetadataTable]])
 ]]>
     </Resource>
     <Resource name="optimized exec plan">
@@ -220,8 +224,9 @@ Calc(select=[b, CAST(other_metadata AS INTEGER) AS other_metadata])
     </Resource>
     <Resource name="ast">
       <![CDATA[
-LogicalProject(timestamp=[$0], metadata_timestamp=[$2], other=[$1], computed_other=[UPPER($1)], computed_timestamp=[CAST($2):VARCHAR(2147483647) CHARACTER SET "UTF-16LE"])
-+- LogicalTableScan(table=[[default_catalog, default_database, MetadataTable]])
+LogicalProject(timestamp=[$0], metadata_timestamp=[$1], other=[$2], computed_other=[$3], computed_timestamp=[$4])
++- LogicalProject(timestamp=[$0], metadata_timestamp=[$2], other=[$1], computed_other=[UPPER($1)], computed_timestamp=[CAST($2):VARCHAR(2147483647) CHARACTER SET "UTF-16LE"])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MetadataTable]])
 ]]>
     </Resource>
     <Resource name="optimized exec plan">
@@ -630,9 +635,10 @@ LogicalProject(a=[$1], b=[$2], c=[$3])
 Calc(select=[a, b, c], where=[>(a, 1)], changelogMode=[I,UB,UA,D])
 +- ChangelogNormalize(key=[id], changelogMode=[I,UB,UA,D])
    +- Exchange(distribution=[hash[id]], changelogMode=[UA,D])
-      +- WatermarkAssigner(rowtime=[ts], watermark=[-(ts, 1000:INTERVAL SECOND)], changelogMode=[UA,D])
-         +- Calc(select=[id, a, +(a, 1) AS b, c, TO_TIMESTAMP(c) AS ts], changelogMode=[UA,D])
-            +- TableSourceScan(table=[[default_catalog, default_database, src]], fields=[id, a, c], changelogMode=[UA,D])
+      +- Calc(select=[id, a, b, c], changelogMode=[UA,D])
+         +- WatermarkAssigner(rowtime=[ts], watermark=[-(ts, 1000:INTERVAL SECOND)], changelogMode=[UA,D])
+            +- Calc(select=[id, a, +(a, 1) AS b, c, TO_TIMESTAMP(c) AS ts], changelogMode=[UA,D])
+               +- TableSourceScan(table=[[default_catalog, default_database, src]], fields=[id, a, c], changelogMode=[UA,D])
 ]]>
     </Resource>
   </TestCase>
@@ -669,8 +675,9 @@ GROUP BY TUMBLE(ts, INTERVAL '10' SECOND)
       <![CDATA[
 LogicalProject(EXPR$0=[TUMBLE_START($0)], EXPR$1=[$1])
 +- LogicalAggregate(group=[{0}], EXPR$1=[COUNT()])
-   +- LogicalProject($f0=[$TUMBLE(PROCTIME(), 10000:INTERVAL SECOND)])
-      +- LogicalTableScan(table=[[default_catalog, default_database, src]])
+   +- LogicalProject($f0=[$TUMBLE($0, 10000:INTERVAL SECOND)])
+      +- LogicalProject(ts=[PROCTIME()], a=[$0], b=[$1])
+         +- LogicalTableScan(table=[[default_catalog, default_database, src]])
 ]]>
     </Resource>
     <Resource name="optimized rel plan">

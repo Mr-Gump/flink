@@ -285,6 +285,18 @@ class FlinkTypeFactory(
   }
 
   /**
+   * Creats a struct type with the persisted columns using FlinkTypeFactory
+   *
+   * @param tableSchema
+   *   schema to convert to Calcite's specific one
+   * @return
+   *   a struct type with the input fieldsNames, input fieldTypes.
+   */
+  def buildPersistedRelNodeRowType(tableSchema: TableSchema): RelDataType = {
+    buildRelNodeRowType(TableSchemaUtils.getPersistedSchema(tableSchema))
+  }
+
+  /**
    * Creates a struct type with the input fieldNames and input fieldTypes using FlinkTypeFactory.
    *
    * @param fieldNames
@@ -410,7 +422,11 @@ class FlinkTypeFactory(
         new GenericRelDataType(generic.genericType, isNullable, typeSystem)
 
       case it: TimeIndicatorRelDataType =>
-        new TimeIndicatorRelDataType(it.typeSystem, it.originalType, isNullable, it.isEventTime)
+        new TimeIndicatorRelDataType(
+          it.typeSystemField,
+          it.originalType,
+          isNullable,
+          it.isEventTime)
 
       // for nested rows we keep the nullability property,
       // top-level rows fall back to Calcite's default handling

@@ -158,31 +158,35 @@ public class TaskTest extends TestLogger {
 
     @Test
     public void testCleanupWhenAfterInvokeSucceeded() throws Exception {
-        createTaskBuilder()
-                .setInvokable(TestInvokableCorrect.class)
-                .build(Executors.directExecutor())
-                .run();
+        Task task =
+                createTaskBuilder()
+                        .setInvokable(TestInvokableCorrect.class)
+                        .build(Executors.directExecutor());
+        task.run();
         assertTrue(wasCleanedUp);
+        assertFalse(task.isCanceledOrFailed());
     }
 
     @Test
     public void testCleanupWhenSwitchToInitializationFails() throws Exception {
-        createTaskBuilder()
-                .setInvokable(TestInvokableCorrect.class)
-                .setTaskManagerActions(
-                        new NoOpTaskManagerActions() {
-                            @Override
-                            public void updateTaskExecutionState(
-                                    TaskExecutionState taskExecutionState) {
-                                if (taskExecutionState.getExecutionState()
-                                        == ExecutionState.INITIALIZING) {
-                                    throw new ExpectedTestException();
-                                }
-                            }
-                        })
-                .build(Executors.directExecutor())
-                .run();
+        Task task =
+                createTaskBuilder()
+                        .setInvokable(TestInvokableCorrect.class)
+                        .setTaskManagerActions(
+                                new NoOpTaskManagerActions() {
+                                    @Override
+                                    public void updateTaskExecutionState(
+                                            TaskExecutionState taskExecutionState) {
+                                        if (taskExecutionState.getExecutionState()
+                                                == ExecutionState.INITIALIZING) {
+                                            throw new ExpectedTestException();
+                                        }
+                                    }
+                                })
+                        .build(Executors.directExecutor());
+        task.run();
         assertTrue(wasCleanedUp);
+        assertTrue(task.isCanceledOrFailed());
     }
 
     @Test
@@ -941,7 +945,7 @@ public class TaskTest extends TestLogger {
 
         final Configuration config = new Configuration();
         config.setLong(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, 5);
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, 50);
+        config.setLong(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, 1000);
 
         final Task task =
                 createTaskBuilder()
@@ -1300,9 +1304,7 @@ public class TaskTest extends TestLogger {
         public void invoke() {}
 
         @Override
-        public void cancel() {
-            fail("This should not be called");
-        }
+        public void cancel() {}
 
         @Override
         public void cleanUp(Throwable throwable) throws Exception {

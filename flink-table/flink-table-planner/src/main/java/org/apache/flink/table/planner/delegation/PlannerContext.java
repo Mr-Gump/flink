@@ -23,6 +23,7 @@ import org.apache.flink.sql.parser.validate.FlinkSqlConformance;
 import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.api.config.OptimizerConfigOptions;
 import org.apache.flink.table.catalog.CatalogManager;
 import org.apache.flink.table.catalog.FunctionCatalog;
 import org.apache.flink.table.module.ModuleManager;
@@ -266,8 +267,9 @@ public class PlannerContext {
     private FlinkSqlConformance getSqlConformance() {
         SqlDialect sqlDialect = context.getTableConfig().getSqlDialect();
         switch (sqlDialect) {
+                // Actually, in Hive dialect, we won't use Calcite parser.
+                // So, we can just use Flink's default sql conformance as a placeholder
             case HIVE:
-                return FlinkSqlConformance.HIVE;
             case DEFAULT:
                 return FlinkSqlConformance.DEFAULT;
             default:
@@ -285,15 +287,30 @@ public class PlannerContext {
         return JavaScalaConversionUtil.<SqlToRelConverter.Config>toJava(
                         getCalciteConfig().getSqlToRelConverterConfig())
                 .orElseGet(
-                        () ->
-                                SqlToRelConverter.config()
-                                        .withTrimUnusedFields(false)
-                                        .withHintStrategyTable(
-                                                FlinkHintStrategies.createHintStrategyTable())
-                                        .withInSubQueryThreshold(Integer.MAX_VALUE)
-                                        .withExpand(false)
-                                        .withRelBuilderFactory(
-                                                FlinkRelFactories.FLINK_REL_BUILDER()));
+                        () -> {
+                            SqlToRelConverter.Config config =
+                                    SqlToRelConverter.config()
+                                            .withTrimUnusedFields(false)
+                                            .withHintStrategyTable(
+                                                    FlinkHintStrategies.createHintStrategyTable())
+                                            .withInSubQueryThreshold(Integer.MAX_VALUE)
+                                            .withExpand(false)
+                                            .withRelBuilderFactory(
+                                                    FlinkRelFactories.FLINK_REL_BUILDER());
+
+                            // disable project merge in sql2rel phase, let it done by the optimizer
+                            boolean mergeProjectsDuringSqlToRel =
+                                    context.getTableConfig()
+                                            .getConfiguration()
+                                            .getBoolean(
+                                                    OptimizerConfigOptions
+                                                            .TABLE_OPTIMIZER_SQL2REL_PROJECT_MERGE_ENABLED);
+                            if (!mergeProjectsDuringSqlToRel) {
+                                config = config.addRelBuilderConfigTransform(c -> c.withBloat(-1));
+                            }
+
+                            return config;
+                        });
     }
 
     /** Returns the operator table for this environment including a custom Calcite configuration. */

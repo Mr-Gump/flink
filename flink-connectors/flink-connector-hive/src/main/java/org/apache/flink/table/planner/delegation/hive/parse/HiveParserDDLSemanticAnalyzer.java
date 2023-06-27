@@ -20,36 +20,31 @@ package org.apache.flink.table.planner.delegation.hive.parse;
 
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple4;
-import org.apache.flink.sql.parser.hive.ddl.HiveDDLUtils;
-import org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveDatabase;
-import org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable;
-import org.apache.flink.table.api.TableColumn;
-import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.ValidationException;
-import org.apache.flink.table.api.WatermarkSpec;
 import org.apache.flink.table.api.constraints.UniqueConstraint;
+import org.apache.flink.table.calcite.bridge.CalciteContext;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.CatalogBaseTable;
 import org.apache.flink.table.catalog.CatalogDatabase;
 import org.apache.flink.table.catalog.CatalogDatabaseImpl;
 import org.apache.flink.table.catalog.CatalogFunction;
 import org.apache.flink.table.catalog.CatalogFunctionImpl;
-import org.apache.flink.table.catalog.CatalogManager;
 import org.apache.flink.table.catalog.CatalogPartition;
 import org.apache.flink.table.catalog.CatalogPartitionImpl;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
+import org.apache.flink.table.catalog.CatalogRegistry;
 import org.apache.flink.table.catalog.CatalogTable;
-import org.apache.flink.table.catalog.CatalogTableImpl;
 import org.apache.flink.table.catalog.CatalogView;
-import org.apache.flink.table.catalog.CatalogViewImpl;
 import org.apache.flink.table.catalog.Column;
-import org.apache.flink.table.catalog.ContextResolvedTable;
 import org.apache.flink.table.catalog.FunctionCatalog;
 import org.apache.flink.table.catalog.FunctionLanguage;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.catalog.ResolvedCatalogBaseTable;
 import org.apache.flink.table.catalog.ResolvedCatalogTable;
+import org.apache.flink.table.catalog.ResolvedCatalogView;
+import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.TableChange;
 import org.apache.flink.table.catalog.UnresolvedIdentifier;
 import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
@@ -58,6 +53,9 @@ import org.apache.flink.table.catalog.hive.HiveCatalog;
 import org.apache.flink.table.catalog.hive.client.HiveShim;
 import org.apache.flink.table.catalog.hive.client.HiveShimLoader;
 import org.apache.flink.table.catalog.hive.factories.HiveFunctionDefinitionFactory;
+import org.apache.flink.table.catalog.hive.util.AlterHiveDatabaseOp;
+import org.apache.flink.table.catalog.hive.util.Constants;
+import org.apache.flink.table.catalog.hive.util.HiveDDLUtils;
 import org.apache.flink.table.catalog.hive.util.HiveTableUtil;
 import org.apache.flink.table.catalog.hive.util.HiveTypeUtil;
 import org.apache.flink.table.factories.FactoryUtil;
@@ -94,7 +92,6 @@ import org.apache.flink.table.operations.ddl.DropPartitionsOperation;
 import org.apache.flink.table.operations.ddl.DropTableOperation;
 import org.apache.flink.table.operations.ddl.DropTempSystemFunctionOperation;
 import org.apache.flink.table.operations.ddl.DropViewOperation;
-import org.apache.flink.table.planner.calcite.FlinkContext;
 import org.apache.flink.table.planner.delegation.hive.HiveParser;
 import org.apache.flink.table.planner.delegation.hive.HiveParserCalcitePlanner;
 import org.apache.flink.table.planner.delegation.hive.HiveParserConstants;
@@ -109,8 +106,9 @@ import org.apache.flink.table.planner.delegation.hive.copy.HiveParserQueryState;
 import org.apache.flink.table.planner.delegation.hive.copy.HiveParserRowResolver;
 import org.apache.flink.table.planner.delegation.hive.copy.HiveParserSemanticAnalyzer;
 import org.apache.flink.table.planner.delegation.hive.copy.HiveParserStorageFormat;
+import org.apache.flink.table.planner.delegation.hive.operations.HiveExecutableOperation;
 import org.apache.flink.table.planner.delegation.hive.operations.HiveShowCreateTableOperation;
-import org.apache.flink.table.planner.utils.OperationConverterUtils;
+import org.apache.flink.table.planner.utils.TableSchemaUtils;
 import org.apache.flink.table.resource.ResourceType;
 import org.apache.flink.table.resource.ResourceUri;
 
@@ -156,34 +154,34 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.sql.parser.hive.ddl.HiveDDLUtils.COL_DELIMITER;
-import static org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveDatabase.ALTER_DATABASE_OP;
-import static org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveDatabaseOwner.DATABASE_OWNER_NAME;
-import static org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveDatabaseOwner.DATABASE_OWNER_TYPE;
-import static org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveTable.ALTER_COL_CASCADE;
-import static org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveTable.ALTER_TABLE_OP;
-import static org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveTable.AlterTableOp.ALTER_COLUMNS;
-import static org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveTable.AlterTableOp.CHANGE_FILE_FORMAT;
-import static org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveTable.AlterTableOp.CHANGE_LOCATION;
-import static org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveTable.AlterTableOp.CHANGE_SERDE_PROPS;
-import static org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveTable.AlterTableOp.CHANGE_TBL_PROPS;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveDatabase.DATABASE_LOCATION_URI;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.HiveTableRowFormat.COLLECTION_DELIM;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.HiveTableRowFormat.ESCAPE_CHAR;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.HiveTableRowFormat.FIELD_DELIM;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.HiveTableRowFormat.LINE_DELIM;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.HiveTableRowFormat.MAPKEY_DELIM;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.HiveTableRowFormat.SERDE_INFO_PROP_PREFIX;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.HiveTableRowFormat.SERDE_LIB_CLASS_NAME;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.HiveTableRowFormat.SERIALIZATION_NULL_FORMAT;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.HiveTableStoredAs.STORED_AS_FILE_FORMAT;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.HiveTableStoredAs.STORED_AS_INPUT_FORMAT;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.HiveTableStoredAs.STORED_AS_OUTPUT_FORMAT;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.NOT_NULL_COLS;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.NOT_NULL_CONSTRAINT_TRAITS;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.PK_CONSTRAINT_TRAIT;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.TABLE_IS_EXTERNAL;
-import static org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable.TABLE_LOCATION_URI;
+import static org.apache.flink.table.catalog.hive.util.AlterTableOp.ALTER_COLUMNS;
+import static org.apache.flink.table.catalog.hive.util.AlterTableOp.CHANGE_FILE_FORMAT;
+import static org.apache.flink.table.catalog.hive.util.AlterTableOp.CHANGE_LOCATION;
+import static org.apache.flink.table.catalog.hive.util.AlterTableOp.CHANGE_SERDE_PROPS;
+import static org.apache.flink.table.catalog.hive.util.AlterTableOp.CHANGE_TBL_PROPS;
+import static org.apache.flink.table.catalog.hive.util.Constants.ALTER_COL_CASCADE;
+import static org.apache.flink.table.catalog.hive.util.Constants.ALTER_DATABASE_OP;
+import static org.apache.flink.table.catalog.hive.util.Constants.ALTER_TABLE_OP;
+import static org.apache.flink.table.catalog.hive.util.Constants.COLLECTION_DELIM;
+import static org.apache.flink.table.catalog.hive.util.Constants.DATABASE_LOCATION_URI;
+import static org.apache.flink.table.catalog.hive.util.Constants.DATABASE_OWNER_NAME;
+import static org.apache.flink.table.catalog.hive.util.Constants.DATABASE_OWNER_TYPE;
+import static org.apache.flink.table.catalog.hive.util.Constants.ESCAPE_CHAR;
+import static org.apache.flink.table.catalog.hive.util.Constants.FIELD_DELIM;
+import static org.apache.flink.table.catalog.hive.util.Constants.LINE_DELIM;
+import static org.apache.flink.table.catalog.hive.util.Constants.MAPKEY_DELIM;
+import static org.apache.flink.table.catalog.hive.util.Constants.NOT_NULL_COLS;
+import static org.apache.flink.table.catalog.hive.util.Constants.NOT_NULL_CONSTRAINT_TRAITS;
+import static org.apache.flink.table.catalog.hive.util.Constants.PK_CONSTRAINT_TRAIT;
+import static org.apache.flink.table.catalog.hive.util.Constants.SERDE_INFO_PROP_PREFIX;
+import static org.apache.flink.table.catalog.hive.util.Constants.SERDE_LIB_CLASS_NAME;
+import static org.apache.flink.table.catalog.hive.util.Constants.SERIALIZATION_NULL_FORMAT;
+import static org.apache.flink.table.catalog.hive.util.Constants.STORED_AS_FILE_FORMAT;
+import static org.apache.flink.table.catalog.hive.util.Constants.STORED_AS_INPUT_FORMAT;
+import static org.apache.flink.table.catalog.hive.util.Constants.STORED_AS_OUTPUT_FORMAT;
+import static org.apache.flink.table.catalog.hive.util.Constants.TABLE_IS_EXTERNAL;
+import static org.apache.flink.table.catalog.hive.util.Constants.TABLE_LOCATION_URI;
+import static org.apache.flink.table.catalog.hive.util.HiveDDLUtils.COL_DELIMITER;
 import static org.apache.flink.table.planner.delegation.hive.copy.HiveParserBaseSemanticAnalyzer.NotNullConstraint;
 import static org.apache.flink.table.planner.delegation.hive.copy.HiveParserBaseSemanticAnalyzer.PrimaryKey;
 import static org.apache.flink.table.planner.delegation.hive.copy.HiveParserBaseSemanticAnalyzer.getColumns;
@@ -202,7 +200,7 @@ public class HiveParserDDLSemanticAnalyzer {
     private final HiveConf conf;
     private final HiveParserQueryState queryState;
     private final HiveCatalog hiveCatalog;
-    private final CatalogManager catalogManager;
+    private final CatalogRegistry catalogRegistry;
     private final String currentDB;
     private final HiveParser hiveParser;
     private final HiveFunctionDefinitionFactory funcDefFactory;
@@ -269,20 +267,20 @@ public class HiveParserDDLSemanticAnalyzer {
     public HiveParserDDLSemanticAnalyzer(
             HiveParserQueryState queryState,
             HiveCatalog hiveCatalog,
-            CatalogManager catalogManager,
+            CatalogRegistry catalogRegistry,
             HiveParser hiveParser,
             HiveShim hiveShim,
             HiveParserContext context,
             HiveParserDMLHelper dmlHelper,
             FrameworkConfig frameworkConfig,
             RelOptCluster cluster,
-            FlinkContext flinkContext)
+            CalciteContext calciteContext)
             throws SemanticException {
         this.queryState = queryState;
         this.conf = queryState.getConf();
         this.hiveCatalog = hiveCatalog;
-        this.currentDB = catalogManager.getCurrentDatabase();
-        this.catalogManager = catalogManager;
+        this.currentDB = catalogRegistry.getCurrentDatabase();
+        this.catalogRegistry = catalogRegistry;
         this.hiveParser = hiveParser;
         this.funcDefFactory = new HiveFunctionDefinitionFactory(hiveShim);
         this.hiveShim = hiveShim;
@@ -290,8 +288,8 @@ public class HiveParserDDLSemanticAnalyzer {
         this.dmlHelper = dmlHelper;
         this.frameworkConfig = frameworkConfig;
         this.cluster = cluster;
-        this.classLoader = flinkContext.getClassLoader();
-        this.functionCatalog = flinkContext.getFunctionCatalog();
+        this.classLoader = calciteContext.getClassLoader();
+        this.functionCatalog = calciteContext.getFunctionCatalog();
         reservedPartitionValues = new HashSet<>();
         // Partition can't have this name
         reservedPartitionValues.add(HiveConf.getVar(conf, HiveConf.ConfVars.DEFAULTPARTITIONNAME));
@@ -433,7 +431,7 @@ public class HiveParserDDLSemanticAnalyzer {
         HiveParserASTNode ast = (HiveParserASTNode) input.getChild(1);
         ObjectIdentifier tableIdentifier =
                 HiveParserBaseSemanticAnalyzer.getObjectIdentifier(
-                        catalogManager, (HiveParserASTNode) input.getChild(0));
+                        catalogRegistry, (HiveParserASTNode) input.getChild(0));
         String[] qualified =
                 new String[] {tableIdentifier.getDatabaseName(), tableIdentifier.getObjectName()};
         String tableName = HiveParserBaseSemanticAnalyzer.getDotName(qualified);
@@ -687,7 +685,7 @@ public class HiveParserDDLSemanticAnalyzer {
             throws SemanticException {
         HiveParserSemanticAnalyzer semanticAnalyzer =
                 new HiveParserSemanticAnalyzer(
-                        queryState, frameworkConfig, cluster, catalogManager);
+                        queryState, frameworkConfig, cluster, catalogRegistry);
         return arguments.isEmpty()
                 ? semanticAnalyzer.genExprNodeDesc((HiveParserASTNode) ast.getChild(1), rowResolver)
                 : semanticAnalyzer.genExprNodeDesc(
@@ -711,7 +709,7 @@ public class HiveParserDDLSemanticAnalyzer {
     private Operation convertShowCreateTable(HiveParserASTNode ast) throws SemanticException {
         ObjectIdentifier identifier =
                 HiveParserBaseSemanticAnalyzer.getObjectIdentifier(
-                        catalogManager, (HiveParserASTNode) ast.getChild(0));
+                        catalogRegistry, (HiveParserASTNode) ast.getChild(0));
         String[] qualTabName =
                 new String[] {identifier.getDatabaseName(), identifier.getObjectName()};
         ObjectPath tablePath = new ObjectPath(qualTabName[0], qualTabName[1]);
@@ -725,7 +723,7 @@ public class HiveParserDDLSemanticAnalyzer {
                                 tablePath));
             }
         }
-        return new HiveShowCreateTableOperation(tablePath);
+        return new HiveExecutableOperation(new HiveShowCreateTableOperation(tablePath));
     }
 
     private boolean isHive310OrLater() {
@@ -736,11 +734,11 @@ public class HiveParserDDLSemanticAnalyzer {
         Operation operation = null;
         ObjectIdentifier tableIdentifier =
                 HiveParserBaseSemanticAnalyzer.getObjectIdentifier(
-                        catalogManager, (HiveParserASTNode) ast.getChild(0));
+                        catalogRegistry, (HiveParserASTNode) ast.getChild(0));
         String[] qualified =
                 new String[] {tableIdentifier.getDatabaseName(), tableIdentifier.getObjectName()};
         String tableName = HiveParserBaseSemanticAnalyzer.getDotName(qualified);
-        CatalogBaseTable alteredTable = getAlteredTable(tableName, true);
+        ResolvedCatalogBaseTable<?> alteredTable = getAlteredTable(tableName, true);
         if (ast.getChild(1).getType() == HiveASTParser.TOK_QUERY) {
             // alter view as
             operation = convertCreateView(ast);
@@ -772,7 +770,7 @@ public class HiveParserDDLSemanticAnalyzer {
     private Operation convertCreateView(HiveParserASTNode ast) throws SemanticException {
         ObjectIdentifier tableIdentifier =
                 HiveParserBaseSemanticAnalyzer.getObjectIdentifier(
-                        catalogManager, (HiveParserASTNode) ast.getChild(0));
+                        catalogRegistry, (HiveParserASTNode) ast.getChild(0));
         String[] qualTabName =
                 new String[] {tableIdentifier.getDatabaseName(), tableIdentifier.getObjectName()};
         String dbDotTable = HiveParserBaseSemanticAnalyzer.getDotName(qualTabName);
@@ -850,15 +848,15 @@ public class HiveParserDDLSemanticAnalyzer {
         hiveParser.analyzeCreateView(createViewInfo, context, queryState);
 
         ObjectIdentifier viewIdentifier = parseObjectIdentifier(createViewInfo.getCompoundName());
-        TableSchema schema =
-                HiveTableUtil.createTableSchema(
+        Schema schema =
+                HiveTableUtil.createSchema(
                         createViewInfo.getSchema(),
                         Collections.emptyList(),
                         Collections.emptySet(),
                         null);
         Map<String, String> props = new HashMap<>();
         if (isAlterViewAs) {
-            CatalogBaseTable baseTable = getCatalogBaseTable(viewIdentifier);
+            ResolvedCatalogBaseTable<?> baseTable = getResolvedCatalogBaseTable(viewIdentifier);
             props.putAll(baseTable.getOptions());
             comment = baseTable.getComment();
         } else {
@@ -867,12 +865,12 @@ public class HiveParserDDLSemanticAnalyzer {
             }
         }
         CatalogView catalogView =
-                new CatalogViewImpl(
+                CatalogView.of(
+                        schema,
+                        comment,
                         createViewInfo.getOriginalText(),
                         createViewInfo.getExpandedText(),
-                        schema,
-                        props,
-                        comment);
+                        props);
         if (isAlterViewAs) {
             return new AlterViewAsOperation(viewIdentifier, catalogView);
         } else {
@@ -883,7 +881,7 @@ public class HiveParserDDLSemanticAnalyzer {
     private Operation convertCreateTable(HiveParserASTNode ast) throws SemanticException {
         ObjectIdentifier tableIdentifier =
                 HiveParserBaseSemanticAnalyzer.getObjectIdentifier(
-                        catalogManager, (HiveParserASTNode) ast.getChild(0));
+                        catalogRegistry, (HiveParserASTNode) ast.getChild(0));
         String[] qualifiedTabName =
                 new String[] {tableIdentifier.getDatabaseName(), tableIdentifier.getObjectName()};
         String dbDotTab = HiveParserBaseSemanticAnalyzer.getDotName(qualifiedTabName);
@@ -1066,15 +1064,17 @@ public class HiveParserDDLSemanticAnalyzer {
                         hiveParser.createCalcitePlanner(context, queryState);
                 calcitePlanner.setCtasCols(cols);
                 RelNode queryRelNode = calcitePlanner.genLogicalPlan(selectStmt);
-                TableSchema tableSchema =
-                        HiveTableUtil.createTableSchema(
+                ResolvedSchema schema =
+                        HiveTableUtil.createResolvedSchema(
                                 cols, partCols, Collections.emptySet(), null);
-                CatalogTable destTable =
-                        new CatalogTableImpl(
-                                tableSchema,
-                                HiveCatalog.getFieldNames(partCols),
-                                tblProps,
-                                comment);
+                ResolvedCatalogTable destTable =
+                        new ResolvedCatalogTable(
+                                CatalogTable.of(
+                                        Schema.newBuilder().fromResolvedSchema(schema).build(),
+                                        comment,
+                                        HiveCatalog.getFieldNames(partCols),
+                                        tblProps),
+                                schema);
 
                 Tuple4<ObjectIdentifier, QueryOperation, Map<String, String>, Boolean>
                         insertOperationInfo =
@@ -1196,18 +1196,16 @@ public class HiveParserDDLSemanticAnalyzer {
         if (uniqueConstraint != null) {
             notNullColSet.addAll(uniqueConstraint.getColumns());
         }
-        TableSchema tableSchema =
-                HiveTableUtil.createTableSchema(cols, partCols, notNullColSet, uniqueConstraint);
+        Schema schema = HiveTableUtil.createSchema(cols, partCols, notNullColSet, uniqueConstraint);
         return new CreateTableOperation(
                 identifier,
-                new CatalogTableImpl(
-                        tableSchema, HiveCatalog.getFieldNames(partCols), props, comment),
+                CatalogTable.of(schema, comment, HiveCatalog.getFieldNames(partCols), props),
                 ifNotExists,
                 isTemporary);
     }
 
     private void markHiveConnector(Map<String, String> props) {
-        props.put(FactoryUtil.CONNECTOR.key(), SqlCreateHiveTable.IDENTIFIER);
+        props.put(FactoryUtil.CONNECTOR.key(), Constants.IDENTIFIER);
     }
 
     public static void encodeRowFormat(
@@ -1268,10 +1266,10 @@ public class HiveParserDDLSemanticAnalyzer {
         }
         CatalogDatabase originDB = getDatabase(dbName);
         Map<String, String> props = new HashMap<>(originDB.getProperties());
-        props.put(ALTER_DATABASE_OP, SqlAlterHiveDatabase.AlterHiveDatabaseOp.CHANGE_PROPS.name());
+        props.put(ALTER_DATABASE_OP, AlterHiveDatabaseOp.CHANGE_PROPS.name());
         props.putAll(dbProps);
         CatalogDatabase newDB = new CatalogDatabaseImpl(props, originDB.getComment());
-        return new AlterDatabaseOperation(catalogManager.getCurrentCatalog(), dbName, newDB);
+        return new AlterDatabaseOperation(catalogRegistry.getCurrentCatalog(), dbName, newDB);
     }
 
     private Operation convertAlterDatabaseOwner(HiveParserASTNode ast) throws SemanticException {
@@ -1292,11 +1290,11 @@ public class HiveParserDDLSemanticAnalyzer {
         }
         CatalogDatabase originDB = getDatabase(dbName);
         Map<String, String> props = new HashMap<>(originDB.getProperties());
-        props.put(ALTER_DATABASE_OP, SqlAlterHiveDatabase.AlterHiveDatabaseOp.CHANGE_OWNER.name());
+        props.put(ALTER_DATABASE_OP, AlterHiveDatabaseOp.CHANGE_OWNER.name());
         props.put(DATABASE_OWNER_NAME, principalDesc.getName());
         props.put(DATABASE_OWNER_TYPE, principalDesc.getType().name().toLowerCase());
         CatalogDatabase newDB = new CatalogDatabaseImpl(props, originDB.getComment());
-        return new AlterDatabaseOperation(catalogManager.getCurrentCatalog(), dbName, newDB);
+        return new AlterDatabaseOperation(catalogRegistry.getCurrentCatalog(), dbName, newDB);
     }
 
     private Operation convertAlterDatabaseLocation(HiveParserASTNode ast) throws SemanticException {
@@ -1307,11 +1305,10 @@ public class HiveParserDDLSemanticAnalyzer {
                 HiveParserBaseSemanticAnalyzer.unescapeSQLString(ast.getChild(1).getText());
         CatalogDatabase originDB = getDatabase(dbName);
         Map<String, String> props = new HashMap<>(originDB.getProperties());
-        props.put(
-                ALTER_DATABASE_OP, SqlAlterHiveDatabase.AlterHiveDatabaseOp.CHANGE_LOCATION.name());
+        props.put(ALTER_DATABASE_OP, CHANGE_LOCATION.name());
         props.put(DATABASE_LOCATION_URI, newLocation);
         CatalogDatabase newDB = new CatalogDatabaseImpl(props, originDB.getComment());
-        return new AlterDatabaseOperation(catalogManager.getCurrentCatalog(), dbName, newDB);
+        return new AlterDatabaseOperation(catalogRegistry.getCurrentCatalog(), dbName, newDB);
     }
 
     private Operation convertCreateDatabase(HiveParserASTNode ast) {
@@ -1357,7 +1354,7 @@ public class HiveParserDDLSemanticAnalyzer {
         }
         CatalogDatabase catalogDatabase = new CatalogDatabaseImpl(props, dbComment);
         return new CreateDatabaseOperation(
-                catalogManager.getCurrentCatalog(), dbName, catalogDatabase, ifNotExists);
+                catalogRegistry.getCurrentCatalog(), dbName, catalogDatabase, ifNotExists);
     }
 
     private Operation convertDropDatabase(HiveParserASTNode ast) {
@@ -1375,13 +1372,13 @@ public class HiveParserDDLSemanticAnalyzer {
         }
 
         return new DropDatabaseOperation(
-                catalogManager.getCurrentCatalog(), dbName, ifExists, ifCascade);
+                catalogRegistry.getCurrentCatalog(), dbName, ifExists, ifCascade);
     }
 
     private Operation convertSwitchDatabase(HiveParserASTNode ast) {
         String dbName =
                 HiveParserBaseSemanticAnalyzer.unescapeIdentifier(ast.getChild(0).getText());
-        return new UseDatabaseOperation(catalogManager.getCurrentCatalog(), dbName);
+        return new UseDatabaseOperation(catalogRegistry.getCurrentCatalog(), dbName);
     }
 
     private Operation convertDropTable(HiveParserASTNode ast, TableType expectedType)
@@ -1392,7 +1389,7 @@ public class HiveParserDDLSemanticAnalyzer {
         boolean ifExists = (ast.getFirstChildWithType(HiveASTParser.TOK_IFEXISTS) != null);
 
         ObjectIdentifier identifier = parseObjectIdentifier(tableName);
-        CatalogBaseTable baseTable = getCatalogBaseTable(identifier, true);
+        ResolvedCatalogBaseTable<?> baseTable = getResolvedCatalogBaseTable(identifier, true);
 
         if (expectedType == TableType.VIRTUAL_VIEW) {
             if (baseTable instanceof CatalogTable) {
@@ -1415,7 +1412,7 @@ public class HiveParserDDLSemanticAnalyzer {
     }
 
     private Operation convertAlterTableProps(
-            CatalogBaseTable alteredTable,
+            ResolvedCatalogBaseTable alteredTable,
             String tableName,
             HashMap<String, String> partSpec,
             HiveParserASTNode ast,
@@ -1464,7 +1461,7 @@ public class HiveParserDDLSemanticAnalyzer {
         }
 
         if (expectView) {
-            return convertAlterViewProps(alteredTable, tableName, mapProp);
+            return convertAlterViewProps((ResolvedCatalogView) alteredTable, tableName, mapProp);
         } else {
             Map<String, String> newProps = new HashMap<>();
             newProps.put(ALTER_TABLE_OP, CHANGE_TBL_PROPS.name());
@@ -1676,7 +1673,7 @@ public class HiveParserDDLSemanticAnalyzer {
 
     private CatalogPartition getPartition(
             ObjectIdentifier tableIdentifier, CatalogPartitionSpec partitionSpec) {
-        return catalogManager
+        return catalogRegistry
                 .getPartition(tableIdentifier, partitionSpec)
                 .orElseThrow(
                         () ->
@@ -1749,7 +1746,8 @@ public class HiveParserDDLSemanticAnalyzer {
         }
 
         ObjectIdentifier tableIdentifier = parseObjectIdentifier(tableName);
-        return new DescribeTableOperation(tableIdentifier, isExt || isFormatted);
+        return new HiveExecutableOperation(
+                new DescribeTableOperation(tableIdentifier, isExt || isFormatted));
     }
 
     public static HashMap<String, String> getPartSpec(HiveParserASTNode partspec) {
@@ -1870,7 +1868,7 @@ public class HiveParserDDLSemanticAnalyzer {
             String sourceName, HiveParserASTNode ast, boolean expectView) throws SemanticException {
         ObjectIdentifier tableIdentifier =
                 HiveParserBaseSemanticAnalyzer.getObjectIdentifier(
-                        catalogManager, (HiveParserASTNode) ast.getChild(0));
+                        catalogRegistry, (HiveParserASTNode) ast.getChild(0));
         String[] target =
                 new String[] {tableIdentifier.getDatabaseName(), tableIdentifier.getObjectName()};
 
@@ -1884,7 +1882,7 @@ public class HiveParserDDLSemanticAnalyzer {
     }
 
     private Operation convertAlterTableChangeCol(
-            ResolvedCatalogBaseTable<?> alteredTable, String[] qualified, HiveParserASTNode ast)
+            CatalogBaseTable alteredTable, String[] qualified, HiveParserASTNode ast)
             throws SemanticException {
         String newComment = null;
         boolean first = false;
@@ -1945,31 +1943,36 @@ public class HiveParserDDLSemanticAnalyzer {
             // disallow changing partition columns
             throw new ValidationException("CHANGE COLUMN cannot be applied to partition columns");
         }
-        TableSchema oldSchema = oldTable.getSchema();
-        TableColumn newTableColumn =
-                TableColumn.physical(
+        ResolvedSchema oldSchema = oldTable.getResolvedSchema();
+        Column newTableColumn =
+                Column.physical(
                         newName,
                         HiveTypeUtil.toFlinkType(TypeInfoUtils.getTypeInfoFromTypeString(newType)));
-        TableSchema newSchema =
-                OperationConverterUtils.changeColumn(
-                        oldSchema, oldName, newTableColumn, first, flagCol);
+        ResolvedSchema newSchema =
+                TableSchemaUtils.changeColumn(oldSchema, oldName, newTableColumn, first, flagCol);
         Map<String, String> props = new HashMap<>(oldTable.getOptions());
         props.put(ALTER_TABLE_OP, ALTER_COLUMNS.name());
         if (isCascade) {
             props.put(ALTER_COL_CASCADE, "true");
         }
 
+        Column oldColumn =
+                oldSchema
+                        .getColumn(oldName)
+                        .orElseThrow(
+                                () ->
+                                        new ValidationException(
+                                                "Can not find the old column: " + oldColName));
+        if (newComment != null) {
+            newTableColumn = newTableColumn.withComment(newComment);
+        } else {
+            newTableColumn = newTableColumn.withComment(oldColumn.getComment().orElse(null));
+        }
+
         List<TableChange> tableChanges =
-                OperationConverterUtils.buildModifyColumnChange(
-                        oldTable.getResolvedSchema()
-                                .getColumn(oldName)
-                                .orElseThrow(
-                                        () ->
-                                                new ValidationException(
-                                                        "Can not find the old column: "
-                                                                + oldColName)),
-                        Column.physical(newTableColumn.getName(), newTableColumn.getType())
-                                .withComment(newComment),
+                TableSchemaUtils.buildModifyColumnChange(
+                        oldColumn,
+                        newTableColumn,
                         first
                                 ? TableChange.ColumnPosition.first()
                                 : (flagCol == null
@@ -1979,13 +1982,21 @@ public class HiveParserDDLSemanticAnalyzer {
         return new AlterTableChangeOperation(
                 tableIdentifier,
                 tableChanges,
-                new CatalogTableImpl(
-                        newSchema, oldTable.getPartitionKeys(), props, oldTable.getComment()),
+                new ResolvedCatalogTable(
+                        CatalogTable.of(
+                                Schema.newBuilder().fromResolvedSchema(newSchema).build(),
+                                oldTable.getComment(),
+                                oldTable.getPartitionKeys(),
+                                props),
+                        newSchema),
                 false);
     }
 
     private Operation convertAlterTableModifyCols(
-            CatalogBaseTable alteredTable, String tblName, HiveParserASTNode ast, boolean replace)
+            ResolvedCatalogBaseTable<?> alteredTable,
+            String tblName,
+            HiveParserASTNode ast,
+            boolean replace)
             throws SemanticException {
 
         List<FieldSchema> newCols =
@@ -1996,7 +2007,7 @@ public class HiveParserDDLSemanticAnalyzer {
         }
 
         ObjectIdentifier tableIdentifier = parseObjectIdentifier(tblName);
-        CatalogTable oldTable = (CatalogTable) alteredTable;
+        ResolvedCatalogTable oldTable = (ResolvedCatalogTable) alteredTable;
 
         // prepare properties
         Map<String, String> props = new HashMap<>(oldTable.getOptions());
@@ -2004,51 +2015,52 @@ public class HiveParserDDLSemanticAnalyzer {
         if (isCascade) {
             props.put(ALTER_COL_CASCADE, "true");
         }
-        TableSchema oldSchema = oldTable.getSchema();
+        ResolvedSchema oldSchema = oldTable.getResolvedSchema();
         final int numPartCol = oldTable.getPartitionKeys().size();
-        TableSchema.Builder builder = TableSchema.builder();
         // add existing non-part col if we're not replacing
+        List<Column> newColumns = new ArrayList<>();
         if (!replace) {
-            List<TableColumn> nonPartCols =
-                    oldSchema.getTableColumns().subList(0, oldSchema.getFieldCount() - numPartCol);
-            for (TableColumn column : nonPartCols) {
-                builder.add(column);
-            }
-            setWatermarkAndPK(builder, oldSchema);
+            List<Column> nonPartCols =
+                    oldSchema.getColumns().subList(0, oldSchema.getColumnCount() - numPartCol);
+
+            newColumns.addAll(nonPartCols);
         }
         // add new cols
         for (FieldSchema col : newCols) {
-            builder.add(
-                    TableColumn.physical(
+            newColumns.add(
+                    Column.physical(
                             col.getName(),
                             HiveTypeUtil.toFlinkType(
                                     TypeInfoUtils.getTypeInfoFromTypeString(col.getType()))));
         }
         // add part cols
-        List<TableColumn> partCols =
+        List<Column> partCols =
                 oldSchema
-                        .getTableColumns()
-                        .subList(oldSchema.getFieldCount() - numPartCol, oldSchema.getFieldCount());
-        for (TableColumn column : partCols) {
-            builder.add(column);
+                        .getColumns()
+                        .subList(
+                                oldSchema.getColumnCount() - numPartCol,
+                                oldSchema.getColumnCount());
+        newColumns.addAll(partCols);
+        ResolvedSchema newSchema;
+        if (!replace) {
+            newSchema =
+                    new ResolvedSchema(
+                            newColumns,
+                            oldSchema.getWatermarkSpecs(),
+                            oldSchema.getPrimaryKey().orElse(null));
+        } else {
+            newSchema = ResolvedSchema.of(newColumns);
         }
         return new AlterTableSchemaOperation(
                 tableIdentifier,
-                new CatalogTableImpl(
-                        builder.build(), oldTable.getPartitionKeys(), props, oldTable.getComment()),
+                new ResolvedCatalogTable(
+                        CatalogTable.of(
+                                Schema.newBuilder().fromResolvedSchema(newSchema).build(),
+                                oldTable.getComment(),
+                                oldTable.getPartitionKeys(),
+                                props),
+                        newSchema),
                 false);
-    }
-
-    private static void setWatermarkAndPK(TableSchema.Builder builder, TableSchema schema) {
-        for (WatermarkSpec watermarkSpec : schema.getWatermarkSpecs()) {
-            builder.watermark(watermarkSpec);
-        }
-        schema.getPrimaryKey()
-                .ifPresent(
-                        pk -> {
-                            builder.primaryKey(
-                                    pk.getName(), pk.getColumns().toArray(new String[0]));
-                        });
     }
 
     private Operation convertAlterTableDropParts(String[] qualified, HiveParserASTNode ast) {
@@ -2075,7 +2087,7 @@ public class HiveParserDDLSemanticAnalyzer {
         validateAlterTableType(tab);
 
         ObjectIdentifier tableIdentifier =
-                catalogManager.qualifyIdentifier(
+                catalogRegistry.qualifyIdentifier(
                         UnresolvedIdentifier.of(qualified[0], qualified[1]));
         List<CatalogPartitionSpec> specs =
                 partSpecs.stream().map(CatalogPartitionSpec::new).collect(Collectors.toList());
@@ -2147,49 +2159,52 @@ public class HiveParserDDLSemanticAnalyzer {
         ObjectIdentifier tableIdentifier =
                 tab.getDbName() == null
                         ? parseObjectIdentifier(tab.getTableName())
-                        : catalogManager.qualifyIdentifier(
+                        : catalogRegistry.qualifyIdentifier(
                                 UnresolvedIdentifier.of(tab.getDbName(), tab.getTableName()));
         return new AddPartitionsOperation(tableIdentifier, ifNotExists, specs, partitions);
     }
 
     private Operation convertAlterViewProps(
-            CatalogBaseTable oldBaseTable, String tableName, Map<String, String> newProps) {
+            ResolvedCatalogView oldView, String tableName, Map<String, String> newProps) {
         ObjectIdentifier viewIdentifier = parseObjectIdentifier(tableName);
-        CatalogView oldView = (CatalogView) oldBaseTable;
         Map<String, String> props = new HashMap<>(oldView.getOptions());
         props.putAll(newProps);
+        ResolvedSchema schema = oldView.getResolvedSchema();
         CatalogView newView =
-                new CatalogViewImpl(
-                        oldView.getOriginalQuery(),
-                        oldView.getExpandedQuery(),
-                        oldView.getSchema(),
-                        props,
-                        oldView.getComment());
+                new ResolvedCatalogView(
+                        CatalogView.of(
+                                Schema.newBuilder().fromResolvedSchema(schema).build(),
+                                oldView.getComment(),
+                                oldView.getOriginalQuery(),
+                                oldView.getExpandedQuery(),
+                                props),
+                        schema);
         return new AlterViewPropertiesOperation(viewIdentifier, newView);
     }
 
     private ResolvedCatalogBaseTable<?> getAlteredTable(String tableName, boolean expectView) {
         ObjectIdentifier objectIdentifier = parseObjectIdentifier(tableName);
-        ResolvedCatalogBaseTable<?> catalogBaseTable = getCatalogBaseTable(objectIdentifier);
+        ResolvedCatalogBaseTable<?> resolvedCatalogBaseTable =
+                getResolvedCatalogBaseTable(objectIdentifier);
         if (expectView) {
-            if (catalogBaseTable instanceof CatalogTable) {
+            if (resolvedCatalogBaseTable instanceof CatalogTable) {
                 throw new ValidationException("ALTER VIEW for a table is not allowed");
             }
         } else {
-            if (catalogBaseTable instanceof CatalogView) {
+            if (resolvedCatalogBaseTable instanceof CatalogView) {
                 throw new ValidationException("ALTER TABLE for a view is not allowed");
             }
         }
-        return catalogBaseTable;
+        return resolvedCatalogBaseTable;
     }
 
     private ObjectIdentifier parseObjectIdentifier(String compoundName) {
         UnresolvedIdentifier unresolvedIdentifier = hiveParser.parseIdentifier(compoundName);
-        return catalogManager.qualifyIdentifier(unresolvedIdentifier);
+        return catalogRegistry.qualifyIdentifier(unresolvedIdentifier);
     }
 
     private CatalogDatabase getDatabase(String databaseName) {
-        Catalog catalog = catalogManager.getCatalog(catalogManager.getCurrentCatalog()).get();
+        Catalog catalog = catalogRegistry.getCatalogOrError(catalogRegistry.getCurrentCatalog());
         CatalogDatabase database;
         try {
             database = catalog.getDatabase(databaseName);
@@ -2199,14 +2214,19 @@ public class HiveParserDDLSemanticAnalyzer {
         return database;
     }
 
-    private ResolvedCatalogBaseTable<?> getCatalogBaseTable(ObjectIdentifier tableIdentifier) {
-        return getCatalogBaseTable(tableIdentifier, false);
+    private ResolvedCatalogBaseTable<?> getResolvedCatalogBaseTable(
+            ObjectIdentifier tableIdentifier) {
+        return getResolvedCatalogBaseTable(tableIdentifier, false);
     }
 
-    private ResolvedCatalogBaseTable<?> getCatalogBaseTable(
+    private ResolvedCatalogBaseTable<?> getResolvedCatalogBaseTable(
             ObjectIdentifier tableIdentifier, boolean ifExists) {
-        Optional<ContextResolvedTable> optionalCatalogTable =
-                catalogManager.getTable(tableIdentifier);
+        if (catalogRegistry.isTemporaryTable(tableIdentifier)) {
+            throw new ValidationException(
+                    String.format("Table or View %s is temporary.", tableIdentifier.toString()));
+        }
+        Optional<ResolvedCatalogBaseTable<?>> optionalCatalogTable =
+                catalogRegistry.getCatalogBaseTable(tableIdentifier);
         if (!optionalCatalogTable.isPresent()) {
             if (ifExists) {
                 return null;
@@ -2216,11 +2236,7 @@ public class HiveParserDDLSemanticAnalyzer {
                                 "Table or View %s doesn't exist.", tableIdentifier.toString()));
             }
         }
-        if (optionalCatalogTable.get().isTemporary()) {
-            throw new ValidationException(
-                    String.format("Table or View %s is temporary.", tableIdentifier.toString()));
-        }
-        return optionalCatalogTable.get().getResolvedTable();
+        return optionalCatalogTable.get();
     }
 
     /**

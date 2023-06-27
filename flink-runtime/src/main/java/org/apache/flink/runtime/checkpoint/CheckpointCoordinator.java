@@ -113,7 +113,7 @@ public class CheckpointCoordinator {
     /** The job whose checkpoint this coordinator coordinates. */
     private final JobID job;
 
-    /** Default checkpoint properties. * */
+    /** Default checkpoint properties. */
     private final CheckpointProperties checkpointProperties;
 
     /** The executor used for asynchronous calls, like potentially blocking I/O. */
@@ -222,8 +222,6 @@ public class CheckpointCoordinator {
 
     private final CheckpointPlanCalculator checkpointPlanCalculator;
 
-    private final ExecutionAttemptMappingProvider attemptMappingProvider;
-
     private boolean baseLocationsForCheckpointInitialized = false;
 
     private boolean forceFullSnapshot;
@@ -242,7 +240,6 @@ public class CheckpointCoordinator {
             ScheduledExecutor timer,
             CheckpointFailureManager failureManager,
             CheckpointPlanCalculator checkpointPlanCalculator,
-            ExecutionAttemptMappingProvider attemptMappingProvider,
             CheckpointStatsTracker statsTracker) {
 
         this(
@@ -257,7 +254,6 @@ public class CheckpointCoordinator {
                 timer,
                 failureManager,
                 checkpointPlanCalculator,
-                attemptMappingProvider,
                 SystemClock.getInstance(),
                 statsTracker,
                 VertexFinishedStateChecker::new);
@@ -276,7 +272,6 @@ public class CheckpointCoordinator {
             ScheduledExecutor timer,
             CheckpointFailureManager failureManager,
             CheckpointPlanCalculator checkpointPlanCalculator,
-            ExecutionAttemptMappingProvider attemptMappingProvider,
             Clock clock,
             CheckpointStatsTracker statsTracker,
             BiFunction<
@@ -314,7 +309,6 @@ public class CheckpointCoordinator {
         this.checkpointsCleaner = checkNotNull(checkpointsCleaner);
         this.failureManager = checkNotNull(failureManager);
         this.checkpointPlanCalculator = checkNotNull(checkpointPlanCalculator);
-        this.attemptMappingProvider = checkNotNull(attemptMappingProvider);
         this.clock = checkNotNull(clock);
         this.isExactlyOnceMode = chkConfig.isExactlyOnce();
         this.unalignedCheckpointsEnabled = chkConfig.isUnalignedCheckpointsEnabled();
@@ -806,7 +800,7 @@ public class CheckpointCoordinator {
     }
 
     /**
-     * Initialize the checkpoint location asynchronously. It will expected to be executed in io
+     * Initialize the checkpoint location asynchronously. It will be expected to be executed in io
      * thread due to it might be time-consuming.
      *
      * @param checkpointID checkpoint id
@@ -1336,6 +1330,7 @@ public class CheckpointCoordinator {
     }
 
     private void reportCompletedCheckpoint(CompletedCheckpoint completedCheckpoint) {
+        failureManager.handleCheckpointSuccess(completedCheckpoint.getCheckpointID());
         CompletedCheckpointStats completedCheckpointStats = completedCheckpoint.getStatistic();
         if (completedCheckpointStats != null) {
             LOG.trace(
@@ -1409,7 +1404,6 @@ public class CheckpointCoordinator {
                     pendingCheckpoint.finalizeCheckpoint(
                             checkpointsCleaner, this::scheduleTriggerRequest, executor);
 
-            failureManager.handleCheckpointSuccess(pendingCheckpoint.getCheckpointID());
             return completedCheckpoint;
         } catch (Exception e1) {
             // abort the current pending checkpoint if we fails to finalize the pending
@@ -1473,23 +1467,28 @@ public class CheckpointCoordinator {
                 checkpointsCleaner.cleanCheckpointOnFailedStoring(completedCheckpoint, executor);
             }
 
-            reportFailedCheckpoint(checkpointId, exception);
+            final CheckpointException checkpointException =
+                    new CheckpointException(
+                            "Could not complete the pending checkpoint " + checkpointId + '.',
+                            CheckpointFailureReason.FINALIZE_CHECKPOINT_FAILURE,
+                            exception);
+            reportFailedCheckpoint(pendingCheckpoint, checkpointException);
             sendAbortedMessages(tasksToAbort, checkpointId, completedCheckpoint.getTimestamp());
-            throw new CheckpointException(
-                    "Could not complete the pending checkpoint " + checkpointId + '.',
-                    CheckpointFailureReason.FINALIZE_CHECKPOINT_FAILURE,
-                    exception);
+            throw checkpointException;
         }
     }
 
-    private void reportFailedCheckpoint(long checkpointId, Exception exception) {
-        PendingCheckpointStats pendingCheckpointStats =
-                statsTracker.getPendingCheckpointStats(checkpointId);
-        if (pendingCheckpointStats != null) {
-            statsTracker.reportFailedCheckpoint(
-                    pendingCheckpointStats.toFailedCheckpoint(
-                            System.currentTimeMillis(), exception));
-        }
+    private void reportFailedCheckpoint(
+            PendingCheckpoint pendingCheckpoint, CheckpointException exception) {
+
+        failureManager.handleCheckpointException(
+                pendingCheckpoint,
+                pendingCheckpoint.getProps(),
+                exception,
+                null,
+                job,
+                getStatsCallback(pendingCheckpoint),
+                statsTracker);
     }
 
     void scheduleTriggerRequest() {
@@ -2070,11 +2069,8 @@ public class CheckpointCoordinator {
         }
     }
 
-    public void reportStats(long id, ExecutionAttemptID attemptId, CheckpointMetrics metrics)
-            throws CheckpointException {
-        attemptMappingProvider
-                .getVertex(attemptId)
-                .ifPresent(ev -> statsTracker.reportIncompleteStats(id, ev, metrics));
+    public void reportStats(long id, ExecutionAttemptID attemptId, CheckpointMetrics metrics) {
+        statsTracker.reportIncompleteStats(id, attemptId, metrics);
     }
 
     // ------------------------------------------------------------------------

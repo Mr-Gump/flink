@@ -95,7 +95,7 @@ class CalcITCase extends StreamingTestBase {
     val ds = env.fromCollection(data)
 
     val t = ds.toTable(tEnv, 'a, 'b)
-    tEnv.registerTable("MyTableRow", t)
+    tEnv.createTemporaryView("MyTableRow", t)
 
     val outputType = InternalTypeInfo.ofFields(new IntType(), new BooleanType())
 
@@ -130,7 +130,7 @@ class CalcITCase extends StreamingTestBase {
     val ds = env.fromCollection(data)
 
     val t = ds.toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTableRow", t)
+    tEnv.createTemporaryView("MyTableRow", t)
 
     val outputType = InternalTypeInfo.ofFields(new IntType(), new IntType(), new BigIntType())
 
@@ -157,7 +157,7 @@ class CalcITCase extends StreamingTestBase {
     val ds = env.fromCollection(data)
 
     val t = ds.toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTableRow", t)
+    tEnv.createTemporaryView("MyTableRow", t)
 
     val outputType =
       InternalTypeInfo.ofFields(VarCharType.STRING_TYPE, VarCharType.STRING_TYPE, new IntType())
@@ -190,7 +190,7 @@ class CalcITCase extends StreamingTestBase {
     val ds = env.fromCollection(data)
 
     val t = ds.toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTableRow", t)
+    tEnv.createTemporaryView("MyTableRow", t)
 
     val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
     val sink = new TestingAppendSink
@@ -215,7 +215,7 @@ class CalcITCase extends StreamingTestBase {
     val ds = env.fromCollection(data)
 
     val t = ds.toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTableRow", t)
+    tEnv.createTemporaryView("MyTableRow", t)
 
     val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
     val sink = new TestingAppendSink
@@ -233,7 +233,7 @@ class CalcITCase extends StreamingTestBase {
     val t = env
       .fromCollection(TestData.smallTupleData3)
       .toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTableRow", t)
+    tEnv.createTemporaryView("MyTableRow", t)
 
     val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
     val sink = new TestingAppendSink
@@ -251,7 +251,7 @@ class CalcITCase extends StreamingTestBase {
     val t = env
       .fromCollection(TestData.smallTupleData3)
       .toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTableRow", t)
+    tEnv.createTemporaryView("MyTableRow", t)
 
     val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
     val sink = new TestingAppendSink
@@ -275,7 +275,7 @@ class CalcITCase extends StreamingTestBase {
         )),
       '_1,
       '_2)
-    tEnv.registerTable("MyTable", table)
+    tEnv.createTemporaryView("MyTable", table)
 
     val result = tEnv.sqlQuery(sqlQuery)
     val sink = TestSinkUtil.configureSink(result, new TestingAppendTableSink())
@@ -293,7 +293,7 @@ class CalcITCase extends StreamingTestBase {
     val t = env
       .fromCollection(TestData.tupleData3)
       .toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
     val sink = new TestingAppendSink
@@ -331,7 +331,7 @@ class CalcITCase extends StreamingTestBase {
     val t = env
       .fromCollection(TestData.tupleData3)
       .toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
     val sink = new TestingAppendSink
@@ -364,6 +364,31 @@ class CalcITCase extends StreamingTestBase {
     val expected = Stream.range(3, 200).map(_.toString).mkString(",")
     assertEquals(sink.getAppendResults.size, TestData.smallTupleData3.size)
     sink.getAppendResults.foreach(result => assertEquals(expected, result))
+  }
+
+  @Test
+  def testIfFunction(): Unit = {
+    val testDataId = TestValuesTableFactory.registerData(TestData.data1)
+    val ddl =
+      s"""
+         |CREATE TABLE t (
+         |  a int,
+         |  b varchar,
+         |  c int
+         |) WITH (
+         |  'connector' = 'values',
+         |  'data-id' = '$testDataId',
+         |  'bounded' = 'true'
+         |)
+         |""".stripMargin
+    tEnv.executeSql(ddl)
+    val expected = List("false,1", "false,2", "false,3", "true,4", "true,5", "true,6")
+    val actual = tEnv
+      .executeSql("SELECT IF(a > 3, 'true', 'false'), a from t")
+      .collect()
+      .map(r => r.toString)
+      .toList
+    assertEquals(expected.sorted, actual.sorted)
   }
 
   @Test
@@ -742,6 +767,30 @@ class CalcITCase extends StreamingTestBase {
     env.execute()
 
     val expected = List("2,cbc\"ddd")
+    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+  }
+
+  @Test
+  def testNonMergeableRandCall(): Unit = {
+    val t = env
+      .fromCollection(TestData.smallTupleData3)
+      .toTable(tEnv, 'a, 'b, 'c)
+    tEnv.createTemporaryView("SimpleTable", t)
+
+    val result = tEnv
+      .sqlQuery(s"""
+                   |SELECT b - a FROM (
+                   |  SELECT r + 5 AS a, r + 7 AS b FROM (
+                   |    SELECT RAND() AS r FROM SimpleTable
+                   |  ) t1
+                   |) t2
+                   |""".stripMargin)
+      .toAppendStream[Row]
+    val sink = new TestingAppendSink
+    result.addSink(sink)
+    env.execute()
+
+    val expected = List("2.0", "2.0", "2.0")
     assertEquals(expected.sorted, sink.getAppendResults.sorted)
   }
 }

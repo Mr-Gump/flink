@@ -18,16 +18,14 @@
 
 package org.apache.flink.connectors.hive;
 
-import org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable;
 import org.apache.flink.table.HiveVersionTestUtil;
 import org.apache.flink.table.api.ResultKind;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.TableResult;
-import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
-import org.apache.flink.table.api.internal.TableEnvironmentImpl;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.catalog.CatalogBaseTable;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
@@ -37,7 +35,6 @@ import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.catalog.hive.HiveCatalog;
 import org.apache.flink.table.catalog.hive.HiveTestUtils;
-import org.apache.flink.table.delegation.ExtendedOperationExecutor;
 import org.apache.flink.table.delegation.Parser;
 import org.apache.flink.table.functions.hive.HiveGenericUDTFTest;
 import org.apache.flink.table.functions.hive.util.TestSplitUDTFInitializeWithStructObjectInspector;
@@ -49,9 +46,8 @@ import org.apache.flink.table.operations.command.HelpOperation;
 import org.apache.flink.table.operations.command.QuitOperation;
 import org.apache.flink.table.operations.command.ResetOperation;
 import org.apache.flink.table.operations.command.SetOperation;
-import org.apache.flink.table.planner.delegation.hive.HiveOperationExecutor;
 import org.apache.flink.table.planner.delegation.hive.HiveParser;
-import org.apache.flink.table.utils.CatalogManagerMocks;
+import org.apache.flink.table.planner.delegation.hive.operations.HiveExecutableOperation;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.FileUtils;
@@ -91,6 +87,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 
 import static org.apache.flink.core.testutils.FlinkAssertions.anyCauseMatches;
+import static org.apache.flink.table.catalog.hive.util.Constants.TABLE_LOCATION_URI;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -129,30 +126,18 @@ public class HiveDialectITCase {
     }
 
     @Test
-    public void testPluggableDialect() {
+    public void testPluggableParser() {
         TableEnvironmentInternal tableEnvInternal = (TableEnvironmentInternal) tableEnv;
         Parser parser = tableEnvInternal.getParser();
         // hive dialect should use HiveParser
         assertThat(parser).isInstanceOf(HiveParser.class);
-        ExtendedOperationExecutor operationExecutor =
-                ((TableEnvironmentImpl) tableEnvInternal).getExtendedOperationExecutor();
-        // hive dialect should use HiveOperationExecutor
-        assertThat(operationExecutor).isInstanceOf(HiveOperationExecutor.class);
         // execute some sql and verify the parser/operation executor instance is reused
         tableEnvInternal.executeSql("show databases");
         assertThat(tableEnvInternal.getParser()).isSameAs(parser);
-        assertThat(((TableEnvironmentImpl) tableEnvInternal).getExtendedOperationExecutor())
-                .isSameAs(operationExecutor);
         // switching dialect will result in a new parser
         tableEnvInternal.getConfig().setSqlDialect(SqlDialect.DEFAULT);
         assertThat(tableEnvInternal.getParser().getClass().getName())
                 .isNotEqualTo(parser.getClass().getName());
-        assertThat(
-                        ((TableEnvironmentImpl) tableEnvInternal)
-                                .getExtendedOperationExecutor()
-                                .getClass()
-                                .getName())
-                .isNotEqualTo(operationExecutor.getClass().getName());
     }
 
     @Test
@@ -225,8 +210,7 @@ public class HiveDialectITCase {
         assertThat(hiveTable.getPartitionKeysSize()).isEqualTo(1);
         assertThat(locationPath(hiveTable.getSd().getLocation())).isEqualTo(location);
         assertThat(hiveTable.getParameters().get("k1")).isEqualTo("v1");
-        assertThat(hiveTable.getParameters())
-                .doesNotContainKey(SqlCreateHiveTable.TABLE_LOCATION_URI);
+        assertThat(hiveTable.getParameters()).doesNotContainKey(TABLE_LOCATION_URI);
 
         tableEnv.executeSql("create table tbl2 (s struct<ts:timestamp,bin:binary>) stored as orc");
         hiveTable = hiveCatalog.getHiveTable(new ObjectPath("default", "tbl2"));
@@ -286,17 +270,25 @@ public class HiveDialectITCase {
         // test describe table
         Parser parser = ((TableEnvironmentInternal) tableEnv).getParser();
         DescribeTableOperation operation =
-                (DescribeTableOperation) parser.parse("desc tbl1").get(0);
+                (DescribeTableOperation)
+                        ((HiveExecutableOperation) parser.parse("desc tbl1").get(0))
+                                .getInnerOperation();
         assertThat(operation.isExtended()).isFalse();
         assertThat(operation.getSqlIdentifier())
                 .isEqualTo(ObjectIdentifier.of(hiveCatalog.getName(), "default", "tbl1"));
 
-        operation = (DescribeTableOperation) parser.parse("describe default.tbl2").get(0);
+        operation =
+                (DescribeTableOperation)
+                        ((HiveExecutableOperation) parser.parse("describe default.tbl2").get(0))
+                                .getInnerOperation();
         assertThat(operation.isExtended()).isFalse();
         assertThat(operation.getSqlIdentifier())
                 .isEqualTo(ObjectIdentifier.of(hiveCatalog.getName(), "default", "tbl2"));
 
-        operation = (DescribeTableOperation) parser.parse("describe extended tbl3").get(0);
+        operation =
+                (DescribeTableOperation)
+                        ((HiveExecutableOperation) parser.parse("describe extended tbl3").get(0))
+                                .getInnerOperation();
         assertThat(operation.isExtended()).isTrue();
         assertThat(operation.getSqlIdentifier())
                 .isEqualTo(ObjectIdentifier.of(hiveCatalog.getName(), "default", "tbl3"));
@@ -310,16 +302,18 @@ public class HiveDialectITCase {
                         + "constraint pk_name primary key (x) disable rely)");
         CatalogTable catalogTable =
                 (CatalogTable) hiveCatalog.getTable(new ObjectPath("default", "tbl"));
-        TableSchema tableSchema = catalogTable.getSchema();
-        assertThat(tableSchema.getPrimaryKey()).as("PK not present").isPresent();
-        assertThat(tableSchema.getPrimaryKey().get().getName()).isEqualTo("pk_name");
-        assertThat(tableSchema.getFieldDataTypes()[0].getLogicalType().isNullable())
+        Schema schema = catalogTable.getUnresolvedSchema();
+        assertThat(schema.getPrimaryKey()).as("PK not present").isPresent();
+        assertThat(schema.getPrimaryKey().get().getColumnNames().size()).isEqualTo(1);
+        assertThat(schema.getPrimaryKey().get().getConstraintName()).isEqualTo("pk_name");
+        List<Schema.UnresolvedColumn> columns = schema.getColumns();
+        assertThat(HiveTestUtils.getType(columns.get(0)).getLogicalType().isNullable())
                 .as("PK cannot be null")
                 .isFalse();
-        assertThat(tableSchema.getFieldDataTypes()[1].getLogicalType().isNullable())
+        assertThat(HiveTestUtils.getType(columns.get(1)).getLogicalType().isNullable())
                 .as("RELY NOT NULL should be reflected in schema")
                 .isFalse();
-        assertThat(tableSchema.getFieldDataTypes()[2].getLogicalType().isNullable())
+        assertThat(HiveTestUtils.getType(columns.get(2)).getLogicalType().isNullable())
                 .as("NORELY NOT NULL shouldn't be reflected in schema")
                 .isTrue();
     }
@@ -356,7 +350,7 @@ public class HiveDialectITCase {
         tableEnv.executeSql("insert into dest select x from src").await();
         List<Row> results = queryResult(tableEnv.sqlQuery("select * from dest"));
         assertThat(results.toString()).isEqualTo("[+I[1], +I[2], +I[3]]");
-        tableEnv.executeSql("insert overwrite dest values (3),(4),(5)").await();
+        tableEnv.executeSql("insert overwrite table dest values (3),(4),(5)").await();
         results = queryResult(tableEnv.sqlQuery("select * from dest"));
         assertThat(results.toString()).isEqualTo("[+I[3], +I[4], +I[5]]");
 
@@ -372,7 +366,7 @@ public class HiveDialectITCase {
         assertThat(results.toString())
                 .isEqualTo(
                         "[+I[1, 0, static], +I[1, 1, a], +I[2, 0, static], +I[2, 1, b], +I[3, 0, static], +I[3, 1, c]]");
-        tableEnv.executeSql("insert overwrite dest2 partition (p1,p2) select 1,x,y from src")
+        tableEnv.executeSql("insert overwrite table dest2 partition (p1,p2) select 1,x,y from src")
                 .await();
         results = queryResult(tableEnv.sqlQuery("select * from dest2 order by x,p1,p2"));
         assertThat(results.toString())
@@ -390,7 +384,8 @@ public class HiveDialectITCase {
         // test table partitioned by decimal type
         tableEnv.executeSql(
                 "create table dest3 (key int, value string) partitioned by (p1 decimal(5, 2)) ");
-        tableEnv.executeSql("insert overwrite dest3 partition (p1) select 1,y,100.45 from src")
+        tableEnv.executeSql(
+                        "insert overwrite table dest3 partition (p1) select 1,y,100.45 from src")
                 .await();
         results = queryResult(tableEnv.sqlQuery("select * from dest3"));
         assertThat(results.toString())
@@ -856,25 +851,6 @@ public class HiveDialectITCase {
         tableEnv.executeSql("drop temporary function temp_split_struct_obj_inspector");
         functions = tableEnv.listUserDefinedFunctions();
         assertThat(functions.length).isEqualTo(0);
-    }
-
-    @Test
-    public void testCatalog() {
-        List<Row> catalogs =
-                CollectionUtil.iteratorToList(tableEnv.executeSql("show catalogs").collect());
-        assertThat(catalogs).hasSize(2);
-        tableEnv.executeSql("use catalog " + CatalogManagerMocks.DEFAULT_CATALOG);
-        List<Row> databases =
-                CollectionUtil.iteratorToList(tableEnv.executeSql("show databases").collect());
-        assertThat(databases).hasSize(1);
-        assertThat(databases.get(0).toString())
-                .isEqualTo("+I[" + CatalogManagerMocks.DEFAULT_DATABASE + "]");
-        String catalogName =
-                tableEnv.executeSql("show current catalog").collect().next().toString();
-        assertThat(catalogName).isEqualTo("+I[" + CatalogManagerMocks.DEFAULT_CATALOG + "]");
-        String databaseName =
-                tableEnv.executeSql("show current database").collect().next().toString();
-        assertThat(databaseName).isEqualTo("+I[" + CatalogManagerMocks.DEFAULT_DATABASE + "]");
     }
 
     @Test

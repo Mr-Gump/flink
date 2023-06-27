@@ -37,7 +37,6 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fifo.FifoSchedule
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -81,7 +80,6 @@ class YARNSessionFIFOITCase extends YarnTestBase {
         ensureNoProhibitedStringInLogFiles(PROHIBITED_STRINGS, WHITELISTED_STRINGS);
     }
 
-    @Timeout(value = 60)
     @Test
     void testDetachedMode() throws Exception {
         runTest(() -> runDetachedModeTest(Collections.emptyMap()));
@@ -244,7 +242,7 @@ class YARNSessionFIFOITCase extends YarnTestBase {
                     log.info("Starting testQueryCluster()");
                     runWithArgs(
                             new String[] {"-q"},
-                            "Summary: totalMemory 8192 totalCores 1332",
+                            "Summary: totalMemory 8.000gb (8589934592 bytes) totalCores 1332",
                             null,
                             RunTypes.YARN_SESSION,
                             0); // we have 666*2 cores.

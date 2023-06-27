@@ -69,6 +69,8 @@ import static org.apache.flink.table.types.inference.InputTypeStrategies.NO_ARGS
 import static org.apache.flink.table.types.inference.InputTypeStrategies.OUTPUT_IF_NULL;
 import static org.apache.flink.table.types.inference.InputTypeStrategies.TYPE_LITERAL;
 import static org.apache.flink.table.types.inference.InputTypeStrategies.and;
+import static org.apache.flink.table.types.inference.InputTypeStrategies.commonArrayType;
+import static org.apache.flink.table.types.inference.InputTypeStrategies.commonMultipleArrayType;
 import static org.apache.flink.table.types.inference.InputTypeStrategies.commonType;
 import static org.apache.flink.table.types.inference.InputTypeStrategies.comparable;
 import static org.apache.flink.table.types.inference.InputTypeStrategies.compositeSequence;
@@ -130,6 +132,60 @@ public final class BuiltInFunctionDefinitions {
                     .runtimeClass("org.apache.flink.table.runtime.functions.scalar.IfNullFunction")
                     .build();
 
+    public static final BuiltInFunctionDefinition MAP_KEYS =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("MAP_KEYS")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    new String[] {"input"},
+                                    new ArgumentTypeStrategy[] {logical(LogicalTypeRoot.MAP)}))
+                    .outputTypeStrategy(nullableIfArgs(SpecificTypeStrategies.MAP_KEYS))
+                    .runtimeClass("org.apache.flink.table.runtime.functions.scalar.MapKeysFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition MAP_VALUES =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("MAP_VALUES")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    new String[] {"input"},
+                                    new ArgumentTypeStrategy[] {logical(LogicalTypeRoot.MAP)}))
+                    .outputTypeStrategy(nullableIfArgs(SpecificTypeStrategies.MAP_VALUES))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.MapValuesFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition MAP_ENTRIES =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("MAP_ENTRIES")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    new String[] {"input"},
+                                    new ArgumentTypeStrategy[] {logical(LogicalTypeRoot.MAP)}))
+                    .outputTypeStrategy(nullableIfArgs(SpecificTypeStrategies.MAP_ENTRIES))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.MapEntriesFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition MAP_FROM_ARRAYS =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("MAP_FROM_ARRAYS")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    new String[] {"keysArray", "valuesArray"},
+                                    new ArgumentTypeStrategy[] {
+                                        logical(LogicalTypeRoot.ARRAY),
+                                        logical(LogicalTypeRoot.ARRAY)
+                                    }))
+                    .outputTypeStrategy(nullableIfArgs(SpecificTypeStrategies.MAP_FROM_ARRAYS))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.MapFromArraysFunction")
+                    .build();
+
     public static final BuiltInFunctionDefinition SOURCE_WATERMARK =
             BuiltInFunctionDefinition.newBuilder()
                     .name("SOURCE_WATERMARK")
@@ -178,6 +234,67 @@ public final class BuiltInFunctionDefinitions {
                     .runtimeClass(
                             "org.apache.flink.table.runtime.functions.scalar.ArrayDistinctFunction")
                     .build();
+
+    public static final BuiltInFunctionDefinition ARRAY_POSITION =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("ARRAY_POSITION")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Arrays.asList("haystack", "needle"),
+                                    Arrays.asList(
+                                            logical(LogicalTypeRoot.ARRAY), ARRAY_ELEMENT_ARG)))
+                    .outputTypeStrategy(nullableIfArgs(explicit(DataTypes.INT())))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.ArrayPositionFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition ARRAY_REMOVE =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("ARRAY_REMOVE")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Arrays.asList("haystack", "needle"),
+                                    Arrays.asList(
+                                            logical(LogicalTypeRoot.ARRAY), ARRAY_ELEMENT_ARG)))
+                    .outputTypeStrategy(nullableIfArgs(ConstantArgumentCount.of(0), argument(0)))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.ArrayRemoveFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition ARRAY_REVERSE =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("ARRAY_REVERSE")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("haystack"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.ARRAY))))
+                    .outputTypeStrategy(nullableIfArgs(argument(0)))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.ArrayReverseFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition ARRAY_UNION =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("ARRAY_UNION")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(commonArrayType(2))
+                    .outputTypeStrategy(nullableIfArgs(COMMON))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.ArrayUnionFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition ARRAY_CONCAT =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("ARRAY_CONCAT")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(commonMultipleArrayType(1))
+                    .outputTypeStrategy(nullableIfArgs(COMMON))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.ArrayConcatFunction")
+                    .build();
     public static final BuiltInFunctionDefinition INTERNAL_REPLICATE_ROWS =
             BuiltInFunctionDefinition.newBuilder()
                     .name("$REPLICATE_ROWS$1")
@@ -192,7 +309,7 @@ public final class BuiltInFunctionDefinitions {
             BuiltInFunctionDefinition.newBuilder()
                     .name("$UNNEST_ROWS$1")
                     .kind(TABLE)
-                    .outputTypeStrategy(TypeStrategies.MISSING)
+                    .outputTypeStrategy(SpecificTypeStrategies.UNUSED)
                     .runtimeClass(
                             "org.apache.flink.table.runtime.functions.table.UnnestRowsFunction")
                     .internal()

@@ -39,6 +39,7 @@ import org.apache.flink.runtime.highavailability.ClientHighAvailabilityServicesF
 import org.apache.flink.runtime.highavailability.DefaultClientHighAvailabilityServicesFactory;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.JobResourceRequirements;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
@@ -50,6 +51,8 @@ import org.apache.flink.runtime.rest.FileUpload;
 import org.apache.flink.runtime.rest.RestClient;
 import org.apache.flink.runtime.rest.handler.async.AsynchronousOperationInfo;
 import org.apache.flink.runtime.rest.handler.async.TriggerResponse;
+import org.apache.flink.runtime.rest.handler.legacy.messages.ClusterOverviewWithVersion;
+import org.apache.flink.runtime.rest.messages.ClusterOverviewHeaders;
 import org.apache.flink.runtime.rest.messages.EmptyMessageParameters;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
 import org.apache.flink.runtime.rest.messages.EmptyResponseBody;
@@ -79,6 +82,8 @@ import org.apache.flink.runtime.rest.messages.dataset.ClusterDataSetListHeaders;
 import org.apache.flink.runtime.rest.messages.job.JobDetailsHeaders;
 import org.apache.flink.runtime.rest.messages.job.JobDetailsInfo;
 import org.apache.flink.runtime.rest.messages.job.JobExecutionResultHeaders;
+import org.apache.flink.runtime.rest.messages.job.JobResourceRequirementsBody;
+import org.apache.flink.runtime.rest.messages.job.JobResourcesRequirementsUpdateHeaders;
 import org.apache.flink.runtime.rest.messages.job.JobStatusInfoHeaders;
 import org.apache.flink.runtime.rest.messages.job.JobSubmitHeaders;
 import org.apache.flink.runtime.rest.messages.job.JobSubmitRequestBody;
@@ -158,6 +163,7 @@ public class RestClusterClient<T> implements ClusterClient<T> {
     private static final Logger LOG = LoggerFactory.getLogger(RestClusterClient.class);
 
     private final RestClusterClientConfiguration restClusterClientConfiguration;
+    private final java.nio.file.Path tempDir;
 
     private final Configuration configuration;
 
@@ -194,7 +200,13 @@ public class RestClusterClient<T> implements ClusterClient<T> {
     public RestClusterClient(
             Configuration config, T clusterId, ClientHighAvailabilityServicesFactory factory)
             throws Exception {
-        this(config, null, clusterId, new ExponentialWaitStrategy(10L, 2000L), factory);
+        this(
+                config,
+                null,
+                clusterId,
+                new ExponentialWaitStrategy(10L, 2000L),
+                factory,
+                Files.createTempDirectory("flink-rest-client-jobgraphs"));
     }
 
     @VisibleForTesting
@@ -209,7 +221,24 @@ public class RestClusterClient<T> implements ClusterClient<T> {
                 restClient,
                 clusterId,
                 waitStrategy,
-                DefaultClientHighAvailabilityServicesFactory.INSTANCE);
+                Files.createTempDirectory("flink-rest-client-jobgraphs"));
+    }
+
+    @VisibleForTesting
+    RestClusterClient(
+            Configuration configuration,
+            @Nullable RestClient restClient,
+            T clusterId,
+            WaitStrategy waitStrategy,
+            java.nio.file.Path tmpDir)
+            throws Exception {
+        this(
+                configuration,
+                restClient,
+                clusterId,
+                waitStrategy,
+                DefaultClientHighAvailabilityServicesFactory.INSTANCE,
+                tmpDir);
     }
 
     private RestClusterClient(
@@ -217,12 +246,14 @@ public class RestClusterClient<T> implements ClusterClient<T> {
             @Nullable RestClient restClient,
             T clusterId,
             WaitStrategy waitStrategy,
-            ClientHighAvailabilityServicesFactory clientHAServicesFactory)
+            ClientHighAvailabilityServicesFactory clientHAServicesFactory,
+            java.nio.file.Path tempDir)
             throws Exception {
         this.configuration = checkNotNull(configuration);
 
         this.restClusterClientConfiguration =
                 RestClusterClientConfiguration.fromConfiguration(configuration);
+        this.tempDir = tempDir;
 
         if (restClient != null) {
             this.restClient = restClient;
@@ -328,7 +359,7 @@ public class RestClusterClient<T> implements ClusterClient<T> {
                         () -> {
                             try {
                                 final java.nio.file.Path jobGraphFile =
-                                        Files.createTempFile("flink-jobgraph", ".bin");
+                                        Files.createTempFile(tempDir, "flink-jobgraph", ".bin");
                                 try (ObjectOutputStream objectOut =
                                         new ObjectOutputStream(
                                                 Files.newOutputStream(jobGraphFile))) {
@@ -430,6 +461,7 @@ public class RestClusterClient<T> implements ClusterClient<T> {
                         });
 
         submissionFuture
+                .exceptionally(ignored -> null) // ignore errors
                 .thenCompose(ignored -> jobGraphFileFuture)
                 .thenAccept(
                         jobGraphFile -> {
@@ -802,6 +834,37 @@ public class RestClusterClient<T> implements ClusterClient<T> {
         return resultFuture;
     }
 
+    /**
+     * Update {@link JobResourceRequirements} of a given job.
+     *
+     * @param jobId jobId specifies the job for which to change the resource requirements
+     * @param jobResourceRequirements new resource requirements for the provided job
+     * @return Future which is completed upon successful operation.
+     */
+    public CompletableFuture<Acknowledge> updateJobResourceRequirements(
+            JobID jobId, JobResourceRequirements jobResourceRequirements) {
+        final JobMessageParameters params = new JobMessageParameters();
+        params.jobPathParameter.resolve(jobId);
+
+        return sendRequest(
+                        JobResourcesRequirementsUpdateHeaders.INSTANCE,
+                        params,
+                        new JobResourceRequirementsBody(jobResourceRequirements))
+                .thenApply(ignored -> Acknowledge.get());
+    }
+
+    /**
+     * Get an overview of the Flink cluster.
+     *
+     * @return Future with the {@link ClusterOverviewWithVersion cluster overview}.
+     */
+    public CompletableFuture<ClusterOverviewWithVersion> getClusterOverview() {
+        return sendRequest(
+                ClusterOverviewHeaders.getInstance(),
+                EmptyMessageParameters.getInstance(),
+                EmptyRequestBody.getInstance());
+    }
+
     // ======================================
     // Legacy stuff we actually implement
     // ======================================
@@ -1013,7 +1076,10 @@ public class RestClusterClient<T> implements ClusterClient<T> {
         return FutureUtils.orTimeout(
                         webMonitorLeaderRetriever.getLeaderFuture(),
                         restClusterClientConfiguration.getAwaitLeaderTimeout(),
-                        TimeUnit.MILLISECONDS)
+                        TimeUnit.MILLISECONDS,
+                        String.format(
+                                "Waiting for leader address of WebMonitorEndpoint timed out after %d ms.",
+                                restClusterClientConfiguration.getAwaitLeaderTimeout()))
                 .thenApplyAsync(
                         leaderAddressSessionId -> {
                             final String url = leaderAddressSessionId.f0;

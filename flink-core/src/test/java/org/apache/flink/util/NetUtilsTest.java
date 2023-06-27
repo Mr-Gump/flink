@@ -18,21 +18,23 @@
 
 package org.apache.flink.util;
 
+import org.assertj.core.api.Assertions;
 import org.junit.Assert;
 import org.junit.Test;
 
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.MalformedURLException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
-import java.net.UnknownHostException;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Set;
 
+import static org.apache.flink.util.NetUtils.socketToUrl;
 import static org.hamcrest.core.IsCollectionContaining.hasItems;
 import static org.hamcrest.core.IsNot.not;
 import static org.junit.Assert.assertEquals;
@@ -259,7 +261,15 @@ public class NetUtilsTest extends TestLogger {
     }
 
     @Test
-    public void testFormatAddress() throws UnknownHostException {
+    public void testFormatAddress() {
+        {
+            // null
+            String host = null;
+            int port = 42;
+            Assert.assertEquals(
+                    "127.0.0.1" + ":" + port,
+                    NetUtils.unresolvedHostAndPortToNormalizedString(host, port));
+        }
         {
             // IPv4
             String host = "1.2.3.4";
@@ -335,5 +345,13 @@ public class NetUtilsTest extends TestLogger {
                     host.toLowerCase() + ":" + port,
                     NetUtils.unresolvedHostAndPortToNormalizedString(host, port));
         }
+    }
+
+    @Test
+    public void testSocketToUrl() throws MalformedURLException {
+        InetSocketAddress socketAddress = new InetSocketAddress("foo.com", 8080);
+        URL expectedResult = new URL("http://foo.com:8080");
+
+        Assertions.assertThat(socketToUrl(socketAddress)).isEqualTo(expectedResult);
     }
 }

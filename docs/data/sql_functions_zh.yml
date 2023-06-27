@@ -640,7 +640,7 @@ temporal:
       3 代表` TO_TIMESTAMP_LTZ(epochMilliseconds, 3)`。
   - sql: TO_TIMESTAMP(string1[, string2])
     table: toTimestamp(STRING1[, STRING2])
-    description: 将 'UTC+0' 时区下格式为 string2（默认为：'yyyy-MM-dd HH:mm:ss'）的字符串 string1 转换为时间戳。
+    description: 将格式为 string2（默认为：'yyyy-MM-dd HH:mm:ss'）的字符串 string1 转换为 timestamp，不带时区。
   - sql: CURRENT_WATERMARK(rowtime)
     description: |
       返回给定时间列属性 rowtime 的当前水印，如果管道中的当前操作没有可用的上游操作的公共水印时则为 `NULL`。
@@ -648,7 +648,7 @@ temporal:
       TIMESTAMP_LTZ(3)。
 
       请注意，此函数可以返回 `NULL`，您可能必须考虑这种情况。例如，如果您想过滤掉后期数据，您可以使用：
-      ```
+      ```sql
       WHERE
         CURRENT_WATERMARK(ts) IS NULL
         OR ts > CURRENT_WATERMARK(ts)
@@ -724,9 +724,42 @@ collection:
   - sql: CARDINALITY(map)
     table: MAP.cardinality()
     description: 返回 map 中的 entries 数量。
+  - sql: ARRAY_CONCAT(array1, ...)
+    table: array1.arrayConcat(...)
+    description: 返回一个数组，该数组是连接至少一个数组的结果。该数组包含第一个数组中的所有元素，然后是第二个数组中的所有元素，依此类推，直到第 N 个数组。如果任何输入数组为 NULL，则函数返回 NULL。
   - sql: map ‘[’ value ‘]’
     table: MAP.at(ANY)
     description: 返回 map 中指定 key 对应的值。
+  - sql: ARRAY_CONTAINS(haystack, needle)
+    table: haystack.arrayContains(needle)
+    description: Returns whether the given element exists in an array. Checking for null elements in the array is supported. If the array itself is null, the function will return null. The given element is cast implicitly to the array's element type if necessary.
+  - sql: ARRAY_DISTINCT(haystack)
+    table: haystack.arrayDistinct()
+    description: Returns an array with unique elements. If the array itself is null, the function will return null. Keeps ordering of elements.
+  - sql: ARRAY_POSITION(haystack, needle)
+    table: haystack.arrayPosition(needle)
+    description: Returns the position of the first occurrence of element in the given array as int. Returns 0 if the given value could not be found in the array. Returns null if either of the arguments are null. And this is not zero based, but 1-based index. The first element in the array has index 1.
+  - sql: ARRAY_REMOVE(haystack, needle)
+    table: haystack.arrayRemove(needle)
+    description: Removes all elements that equal to element from array. If the array itself is null, the function will return null. Keeps ordering of elements.
+  - sql: ARRAY_REVERSE(haystack)
+    table: haystack.arrayReverse()
+    description: Returns an array in reverse order. If the array itself is null, the function will return null.
+  - sql: ARRAY_UNION(array1, array2)
+    table: haystack.arrayUnion(array)
+    description: Returns an array of the elements in the union of array1 and array2, without duplicates. If any of the array is null, the function will return null.
+  - sql: MAP_KEYS(map)
+    table: MAP.mapKeys()
+    description: Returns the keys of the map as array. No order guaranteed.
+  - sql: MAP_VALUES(map)
+    table: MAP.mapValues()
+    description: Returns the values of the map as array. No order guaranteed.
+  - sql: MAP_ENTRIES(map)
+    table: MAP.mapEntries()
+    description: Returns an array of all entries in the given map. No order guaranteed.
+  - sql: MAP_FROM_ARRAYS(array_of_keys, array_of_values)
+    table: mapFromArrays(array_of_keys, array_of_values)
+    description: Returns a map created from an arrays of keys and values. Note that the lengths of two arrays should be the same.
 
 json:
   - sql: IS JSON [ { VALUE | SCALAR | ARRAY | OBJECT } ]
@@ -737,7 +770,7 @@ json:
       指定可选类型参数将会限制 JSON 对象所允许的类型。
       如果字符串是有效的 JSON，但不是指定的类型，则返回 `false`。默认值为 `VALUE`。
 
-      ```
+      ```sql
       -- TRUE
       '1' IS JSON
       '[]' IS JSON
@@ -770,7 +803,7 @@ json:
 
       如果要忽略错误行为，那么将 `FALSE ON ERROR` 设为默认值。
 
-      ```
+      ```sql
       -- TRUE
       SELECT JSON_EXISTS('{"a": true}', '$.a');
       -- FALSE
@@ -793,7 +826,7 @@ json:
 
       此函数返回一个包含序列化值的 JSON 字符串。如果值为 `NULL`，函数返回 `NULL`。
 
-      ```
+      ```sql
       -- NULL
       JSON_STRING(CAST(NULL AS INT))
 
@@ -825,7 +858,7 @@ json:
       对于路径表达式中包含特殊字符（如空格），你可以使用`['property']` 获 `["property"]`来引用父对象中指定的属性。请确保在属性名两侧加上单引号或双引号。
       当在 SQL 使用 JSON_VALUE 时，路径作为一个字符串参数已经被单引号引用了，因此你必须将属性名上的单引号转义，如`JSON_VALUE('{"a b": "true"}', '$.[''a b'']')`。
       
-      ```
+      ```sql
       -- "true"
       JSON_VALUE('{"a": true}', '$.a')
 
@@ -859,7 +892,7 @@ json:
       `onEmpty` 和 `onError` 分别决定路径表达式为空或引发错误时的行为。默认情况下，这两种情况都会返回 `null`。其他选择是
       使用空数组、空对象或引发错误。
 
-      ```
+      ```sql
       -- '{ "b": 1 }'
       JSON_QUERY('{ "a": { "b": 1 } }', '$.a')
       -- '[1, 2]'
@@ -901,7 +934,7 @@ json:
 
       值是由另一个 JSON 构造函数调用 (`JSON_OBJECT`，`JSON_ARRAY`) 直接插入所创建，而不是作为一个字符串。它允许构建嵌套的 JSON 结构。
 
-      ```
+      ```sql
       -- '{}'
       JSON_OBJECT()
 
@@ -936,7 +969,7 @@ json:
 
       目前在 `OVER` windows 中不支持此函数。
 
-      ```
+      ```sql
       -- '{"Apple":2,"Banana":17,"Orange":0}'
       SELECT
         JSON_OBJECTAGG(KEY product VALUE cnt)
@@ -951,7 +984,7 @@ json:
 
       元素是由另一个 JSON 构造函数调用 (`JSON_OBJECT`，`JSON_ARRAY`) 直接插入所创建，而不是作为一个字符串。它允许构建嵌套的 JSON 结构。
 
-      ```
+      ```sql
       -- '[]'
       JSON_ARRAY()
       -- '[1,"2"]'
@@ -976,7 +1009,7 @@ json:
 
       此函数目前不支持 `OVER` windows、未绑定的 session windows 或 hop windows。
 
-      ```
+      ```sql
       -- '["Apple","Banana","Orange"]'
       SELECT
         JSON_ARRAYAGG(product)
@@ -985,12 +1018,17 @@ json:
 
 valueconstruction:
   - sql: |
-      -- implicit constructor with parenthesis
+      **implicit** constructor with parenthesis 
+      
       (value1 [, value2]*)
+
+      **explicit** ROW constructor with 
+      
+      ROW(value1 [, value2]*)
     table: row(ANY1, ANY2, ...)
     description: |
-      返回从值列表 (value1, value2, ...) 创建的行。隐式行构造函数支持任意表达式作为字段，但至少需要两个字段。
-      显式行构造函数可以处理任意数量的字段，但目前还不能很好地支持所有类型的字段表达式。
+      返回从值列表 (value1, value2, ...) 创建的行。隐式行构造函数至少需要两个字段。显式行构造函数可以处理任意数量的字段。
+      两者都支持任意表达式作为字段
   - sql: ARRAY ‘[’ value1 [, value2 ]* ‘]’
     table: array(ANY1, ANY2, ...)
     description: 返回从值列表 (value1, value2, ...) 创建的数组。

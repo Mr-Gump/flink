@@ -1487,6 +1487,74 @@ class Expression(Generic[T]):
         """
         return _binary_op("arrayDistinct")(self)
 
+    def array_position(self, needle) -> 'Expression':
+        """
+        Returns the position of the first occurrence of element in the given array as int.
+
+        Returns 0 if the given value could not be found in the array. Returns null if either of the
+        arguments are null.
+        NOTE: that this is not zero based, but 1-based index. The first element in the array
+        has index 1.
+        """
+        return _binary_op("arrayPosition")(self, needle)
+
+    def array_remove(self, needle) -> 'Expression':
+        """
+        Removes all elements that equal to element from array.
+        If the array itself is null, the function will return null. Keeps ordering of elements.
+        """
+        return _binary_op("arrayRemove")(self, needle)
+
+    def array_reverse(self) -> 'Expression':
+        """
+        Returns an array in reverse order.
+        If the array itself is null, the function will return null.
+        """
+        return _binary_op("arrayReverse")(self)
+
+    def array_union(self, array) -> 'Expression':
+        """
+        Returns an array of the elements in the union of array1 and array2, without duplicates.
+        If any of the array is null, the function will return null.
+        """
+        return _binary_op("arrayUnion")(self, array)
+
+    def array_concat(self, *arrays) -> 'Expression':
+        """
+        Returns an array that is the result of concatenating at least one array.
+        This array contains all the elements in the first array, followed by all
+        the elements in the second array, and so forth, up to the Nth array.
+        If any input array is NULL, the function returns NULL.
+        """
+        return _binary_op("arrayConcat")(self, *arrays)
+
+    @property
+    def map_keys(self) -> 'Expression':
+        """
+        Returns the keys of the map as an array. No order guaranteed.
+
+        .. seealso:: :py:attr:`~Expression.map_keys`
+        """
+        return _unary_op("mapKeys")(self)
+
+    @property
+    def map_values(self) -> 'Expression':
+        """
+        Returns the values of the map as an array. No order guaranteed.
+
+        .. seealso:: :py:attr:`~Expression.map_values`
+        """
+        return _unary_op("mapValues")(self)
+
+    @property
+    def map_entries(self) -> 'Expression':
+        """
+        Returns an array of all entries in the given map. No order guaranteed.
+
+        .. seealso:: :py:attr:`~Expression.map_entries`
+        """
+        return _unary_op("mapEntries")(self)
+
     # ---------------------------- time definition functions -----------------------------
 
     @property

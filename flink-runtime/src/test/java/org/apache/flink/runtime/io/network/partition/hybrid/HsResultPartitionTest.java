@@ -45,11 +45,12 @@ import org.apache.flink.runtime.io.network.partition.ResultSubpartitionView;
 import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.util.IOUtils;
+import org.apache.flink.util.concurrent.ExecutorThreadFactory;
+import org.apache.flink.util.concurrent.IgnoreShutdownRejectedExecutionHandler;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -61,8 +62,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Queue;
 import java.util.Random;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
@@ -100,7 +101,11 @@ class HsResultPartitionTest {
                 new FileChannelManagerImpl(new String[] {tempDataPath.toString()}, "testing");
         globalPool = new NetworkBufferPool(totalBuffers, bufferSize);
         readBufferPool = new BatchShuffleReadBufferPool(totalBytes, bufferSize);
-        readIOExecutor = Executors.newScheduledThreadPool(numThreads);
+        readIOExecutor =
+                new ScheduledThreadPoolExecutor(
+                        numThreads,
+                        new ExecutorThreadFactory("test-io-scheduler-thread"),
+                        new IgnoreShutdownRejectedExecutionHandler());
     }
 
     @AfterEach
@@ -347,7 +352,6 @@ class HsResultPartitionTest {
     }
 
     @Test
-    @Timeout(30)
     void testRelease() throws Exception {
         final int numSubpartitions = 2;
         final int numBuffers = 10;

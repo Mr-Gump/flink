@@ -31,12 +31,12 @@ org.apache.flink.table.api.ValidationException: Table with identifier 'default_c
 
 describe non_exist;
 !output
-org.apache.flink.table.api.ValidationException: Tables or views with the identifier 'default_catalog.default_database.non_exist' doesn't exist
+org.apache.flink.table.api.ValidationException: Tables or views with the identifier 'default_catalog.default_database.non_exist' doesn't exist.
 !error
 
 desc non_exist;
 !output
-org.apache.flink.table.api.ValidationException: Tables or views with the identifier 'default_catalog.default_database.non_exist' doesn't exist
+org.apache.flink.table.api.ValidationException: Tables or views with the identifier 'default_catalog.default_database.non_exist' doesn't exist.
 !error
 
 alter table non_exist rename to non_exist2;
@@ -396,13 +396,17 @@ connector
 fields.amount.kind
 fields.amount.max
 fields.amount.min
+fields.amount.null-rate
 fields.product.kind
 fields.product.length
+fields.product.null-rate
 fields.ts.kind
 fields.ts.max-past
+fields.ts.null-rate
 fields.user.kind
 fields.user.max
 fields.user.min
+fields.user.null-rate
 number-of-rows
 rows-per-second
 !error

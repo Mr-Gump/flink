@@ -35,6 +35,7 @@ import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.configuration.WebOptions;
 import org.apache.flink.core.execution.CheckpointType;
 import org.apache.flink.core.execution.SavepointFormatType;
+import org.apache.flink.core.failure.FailureEnricher;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.blob.BlobServer;
 import org.apache.flink.runtime.checkpoint.Checkpoints;
@@ -49,13 +50,16 @@ import org.apache.flink.runtime.dispatcher.cleanup.ResourceCleaner;
 import org.apache.flink.runtime.dispatcher.cleanup.ResourceCleanerFactory;
 import org.apache.flink.runtime.entrypoint.ClusterEntryPointExceptionUtils;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
+import org.apache.flink.runtime.executiongraph.ArchivedExecutionJobVertex;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.JobResultEntry;
 import org.apache.flink.runtime.highavailability.JobResultStore;
 import org.apache.flink.runtime.highavailability.JobResultStoreOptions;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.JobResourceRequirements;
 import org.apache.flink.runtime.jobgraph.JobVertex;
+import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobmanager.JobGraphWriter;
 import org.apache.flink.runtime.jobmaster.JobManagerRunner;
@@ -77,6 +81,7 @@ import org.apache.flink.runtime.operators.coordination.CoordinationRequest;
 import org.apache.flink.runtime.operators.coordination.CoordinationResponse;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerGateway;
 import org.apache.flink.runtime.resourcemanager.ResourceOverview;
+import org.apache.flink.runtime.rest.handler.RestHandlerException;
 import org.apache.flink.runtime.rest.handler.async.OperationResult;
 import org.apache.flink.runtime.rest.handler.job.AsynchronousJobOperationKey;
 import org.apache.flink.runtime.rest.messages.ThreadDumpInfo;
@@ -93,6 +98,8 @@ import org.apache.flink.util.SerializedValue;
 import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.function.FunctionUtils;
 import org.apache.flink.util.function.ThrowingConsumer;
+
+import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -150,6 +157,7 @@ public abstract class Dispatcher extends FencedRpcEndpoint<DispatcherId>
     private final BlobServer blobServer;
 
     private final FatalErrorHandler fatalErrorHandler;
+    private final Collection<FailureEnricher> failureEnrichers;
 
     private final OnMainThreadJobManagerRunnerRegistry jobManagerRunnerRegistry;
 
@@ -189,6 +197,12 @@ public abstract class Dispatcher extends FencedRpcEndpoint<DispatcherId>
     private final Map<JobID, Long> uninitializedJobClientHeartbeatTimeout = new HashMap<>();
     private final long jobClientAlivenessCheckInterval;
     private ScheduledFuture<?> jobClientAlivenessCheck;
+
+    /**
+     * Simple data-structure to keep track of pending {@link JobResourceRequirements} updates, so we
+     * can prevent race conditions.
+     */
+    private final Set<JobID> pendingJobResourceRequirementsUpdates = new HashSet<>();
 
     /** Enum to distinguish between initial job submission and re-submission for recovery. */
     protected enum ExecutionType {
@@ -255,6 +269,7 @@ public abstract class Dispatcher extends FencedRpcEndpoint<DispatcherId>
         this.heartbeatServices = dispatcherServices.getHeartbeatServices();
         this.blobServer = dispatcherServices.getBlobServer();
         this.fatalErrorHandler = dispatcherServices.getFatalErrorHandler();
+        this.failureEnrichers = dispatcherServices.getFailureEnrichers();
         this.jobGraphWriter = dispatcherServices.getJobGraphWriter();
         this.jobResultStore = dispatcherServices.getJobResultStore();
         this.jobManagerMetricGroup = dispatcherServices.getJobManagerMetricGroup();
@@ -644,6 +659,7 @@ public abstract class Dispatcher extends FencedRpcEndpoint<DispatcherId>
                 jobManagerSharedServices,
                 new DefaultJobManagerJobMetricGroupFactory(jobManagerMetricGroup),
                 fatalErrorHandler,
+                failureEnrichers,
                 System.currentTimeMillis());
     }
 
@@ -1112,6 +1128,86 @@ public abstract class Dispatcher extends FencedRpcEndpoint<DispatcherId>
                         jobID);
                 cancelJob(jobID, webTimeout);
             }
+        }
+    }
+
+    @Override
+    public CompletableFuture<JobResourceRequirements> requestJobResourceRequirements(JobID jobId) {
+        return performOperationOnJobMasterGateway(
+                jobId, JobMasterGateway::requestJobResourceRequirements);
+    }
+
+    @Override
+    public CompletableFuture<Acknowledge> updateJobResourceRequirements(
+            JobID jobId, JobResourceRequirements jobResourceRequirements) {
+        if (!pendingJobResourceRequirementsUpdates.add(jobId)) {
+            return FutureUtils.completedExceptionally(
+                    new RestHandlerException(
+                            "Another update to the job [%s] resource requirements is in progress.",
+                            HttpResponseStatus.CONFLICT));
+        }
+        return performOperationOnJobMasterGateway(jobId, gateway -> gateway.requestJob(webTimeout))
+                .thenApply(
+                        job -> {
+                            final Map<JobVertexID, Integer> maxParallelismPerJobVertex =
+                                    new HashMap<>();
+                            for (ArchivedExecutionJobVertex vertex :
+                                    job.getArchivedExecutionGraph().getVerticesTopologically()) {
+                                maxParallelismPerJobVertex.put(
+                                        vertex.getJobVertexId(), vertex.getMaxParallelism());
+                            }
+                            return maxParallelismPerJobVertex;
+                        })
+                .thenAccept(
+                        maxParallelismPerJobVertex ->
+                                validateMaxParallelism(
+                                        jobResourceRequirements, maxParallelismPerJobVertex))
+                .thenRunAsync(
+                        () -> {
+                            try {
+                                jobGraphWriter.putJobResourceRequirements(
+                                        jobId, jobResourceRequirements);
+                            } catch (Exception e) {
+                                throw new CompletionException(
+                                        new RestHandlerException(
+                                                "The resource requirements could not be persisted and have not been applied. Please retry.",
+                                                HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                                                e));
+                            }
+                        },
+                        ioExecutor)
+                .thenComposeAsync(
+                        ignored ->
+                                performOperationOnJobMasterGateway(
+                                        jobId,
+                                        jobMasterGateway ->
+                                                jobMasterGateway.updateJobResourceRequirements(
+                                                        jobResourceRequirements)),
+                        getMainThreadExecutor())
+                .whenComplete(
+                        (ack, error) -> {
+                            if (error != null) {
+                                log.debug(
+                                        "Failed to update requirements for job {}.", jobId, error);
+                            }
+                            pendingJobResourceRequirementsUpdates.remove(jobId);
+                        });
+    }
+
+    private static void validateMaxParallelism(
+            JobResourceRequirements jobResourceRequirements,
+            Map<JobVertexID, Integer> maxParallelismPerJobVertex) {
+
+        final List<String> validationErrors =
+                JobResourceRequirements.validate(
+                        jobResourceRequirements, maxParallelismPerJobVertex);
+
+        if (!validationErrors.isEmpty()) {
+            throw new CompletionException(
+                    new RestHandlerException(
+                            validationErrors.stream()
+                                    .collect(Collectors.joining(System.lineSeparator())),
+                            HttpResponseStatus.BAD_REQUEST));
         }
     }
 

@@ -89,7 +89,10 @@ public class ResourceManagerRuntimeServices {
                     new DefaultResourceAllocationStrategy(
                             SlotManagerUtils.generateTaskManagerTotalResourceProfile(
                                     slotManagerConfiguration.getDefaultWorkerResourceSpec()),
-                            slotManagerConfiguration.getNumSlotsPerWorker()));
+                            slotManagerConfiguration.getNumSlotsPerWorker(),
+                            slotManagerConfiguration.isEvenlySpreadOutSlots(),
+                            slotManagerConfiguration.getTaskManagerTimeout(),
+                            slotManagerConfiguration.getRedundantTaskManagerNum()));
         } else {
             return new DeclarativeSlotManager(
                     scheduledExecutor,

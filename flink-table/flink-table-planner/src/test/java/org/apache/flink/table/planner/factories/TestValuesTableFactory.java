@@ -130,6 +130,7 @@ import org.apache.flink.util.InstantiationUtil;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -389,12 +390,28 @@ public final class TestValuesTableFactory
             ConfigOptions.key("sink.drop-late-event")
                     .booleanType()
                     .defaultValue(false)
-                    .withDeprecatedKeys("Option to determine whether to discard the late event.");
+                    .withDescription("Option to determine whether to discard the late event.");
     private static final ConfigOption<Integer> SOURCE_NUM_ELEMENT_TO_SKIP =
             ConfigOptions.key("source.num-element-to-skip")
                     .intType()
                     .defaultValue(-1)
-                    .withDeprecatedKeys("Option to define the number of elements to skip.");
+                    .withDescription("Option to define the number of elements to skip.");
+
+    private static final ConfigOption<Integer> SOURCE_SLEEP_AFTER_ELEMENTS =
+            ConfigOptions.key("source.sleep-after-elements")
+                    .intType()
+                    .defaultValue(-1)
+                    .withDescription(
+                            "Option to specify the number of elements to process before sleeping for a specific amount of time. "
+                                    + "The default value is -1, which means that this process is skipped.");
+
+    private static final ConfigOption<Duration> SOURCE_SLEEP_TIME =
+            ConfigOptions.key("source.sleep-time")
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(0))
+                    .withDescription(
+                            "Option to specify the amount of time to sleep after processing every N elements. "
+                                    + "The default value is 0, which means that no sleep is performed");
 
     /**
      * Parse partition list from Options with the format as
@@ -434,6 +451,8 @@ public final class TestValuesTableFactory
         int numElementToSkip = helper.getOptions().get(SOURCE_NUM_ELEMENT_TO_SKIP);
         boolean internalData = helper.getOptions().get(INTERNAL_DATA);
         int lookupThreshold = helper.getOptions().get(LOOKUP_THRESHOLD);
+        int sleepAfterElements = helper.getOptions().get(SOURCE_SLEEP_AFTER_ELEMENTS);
+        long sleepTimeMillis = helper.getOptions().get(SOURCE_SLEEP_TIME).toMillis();
         DefaultLookupCache cache = null;
         if (helper.getOptions().get(CACHE_TYPE).equals(LookupOptions.LookupCacheType.PARTIAL)) {
             cache = DefaultLookupCache.fromConfig(helper.getOptions());
@@ -460,7 +479,8 @@ public final class TestValuesTableFactory
 
         if (sourceClass.equals("DEFAULT")) {
             if (internalData) {
-                return new TestValuesScanTableSourceWithInternalData(dataId, isBounded);
+                return new TestValuesScanTableSourceWithInternalData(
+                        dataId, isBounded, sleepAfterElements, sleepTimeMillis);
             }
 
             Collection<Row> data = registeredData.getOrDefault(dataId, Collections.emptyList());
@@ -598,6 +618,8 @@ public final class TestValuesTableFactory
 
         final int[] primaryKeyIndices =
                 TableSchemaUtils.getPrimaryKeyIndices(context.getCatalogTable().getSchema());
+        TableSchema tableSchema =
+                TableSchemaUtils.getPhysicalSchema(context.getCatalogTable().getSchema());
 
         if (sinkClass.equals("DEFAULT")) {
             int rowTimeIndex =
@@ -613,7 +635,8 @@ public final class TestValuesTableFactory
                     writableMetadata,
                     parallelism,
                     changelogMode,
-                    rowTimeIndex);
+                    rowTimeIndex,
+                    tableSchema);
         } else {
             try {
                 return InstantiationUtil.instantiate(
@@ -662,6 +685,8 @@ public final class TestValuesTableFactory
                         ENABLE_WATERMARK_PUSH_DOWN,
                         SINK_DROP_LATE_EVENT,
                         SOURCE_NUM_ELEMENT_TO_SKIP,
+                        SOURCE_SLEEP_AFTER_ELEMENTS,
+                        SOURCE_SLEEP_TIME,
                         INTERNAL_DATA,
                         CACHE_TYPE,
                         PARTIAL_CACHE_EXPIRE_AFTER_ACCESS,
@@ -1763,14 +1788,22 @@ public final class TestValuesTableFactory
         }
     }
 
-    /** Values {@link ScanTableSource} which collects the registered {@link RowData} directly. */
+    /**
+     * Values {@link ScanTableSource} which collects the registered {@link RowData} directly, sleeps
+     * {@link #sleepTimeMillis} every {@link #sleepAfterElements} elements.
+     */
     private static class TestValuesScanTableSourceWithInternalData implements ScanTableSource {
         private final String dataId;
         private final boolean bounded;
+        private final int sleepAfterElements;
+        private final long sleepTimeMillis;
 
-        public TestValuesScanTableSourceWithInternalData(String dataId, boolean bounded) {
+        public TestValuesScanTableSourceWithInternalData(
+                String dataId, boolean bounded, int sleepAfterElements, long sleepTimeMillis) {
             this.dataId = dataId;
             this.bounded = bounded;
+            this.sleepAfterElements = sleepAfterElements;
+            this.sleepTimeMillis = sleepTimeMillis;
         }
 
         @Override
@@ -1780,13 +1813,15 @@ public final class TestValuesTableFactory
 
         @Override
         public ScanRuntimeProvider getScanRuntimeProvider(ScanContext runtimeProviderContext) {
-            final SourceFunction<RowData> sourceFunction = new FromRowDataSourceFunction(dataId);
+            final SourceFunction<RowData> sourceFunction =
+                    new FromRowDataSourceFunction(dataId, sleepAfterElements, sleepTimeMillis);
             return SourceFunctionProvider.of(sourceFunction, bounded);
         }
 
         @Override
         public DynamicTableSource copy() {
-            return new TestValuesScanTableSourceWithInternalData(dataId, bounded);
+            return new TestValuesScanTableSourceWithInternalData(
+                    dataId, bounded, sleepAfterElements, sleepTimeMillis);
         }
 
         @Override
@@ -1813,6 +1848,7 @@ public final class TestValuesTableFactory
         private final Integer parallelism;
         private final ChangelogMode changelogModeEnforced;
         private final int rowtimeIndex;
+        private final TableSchema tableSchema;
 
         private TestValuesTableSink(
                 DataType consumedDataType,
@@ -1824,7 +1860,8 @@ public final class TestValuesTableFactory
                 Map<String, DataType> writableMetadata,
                 @Nullable Integer parallelism,
                 @Nullable ChangelogMode changelogModeEnforced,
-                int rowtimeIndex) {
+                int rowtimeIndex,
+                TableSchema tableSchema) {
             this.consumedDataType = consumedDataType;
             this.primaryKeyIndices = primaryKeyIndices;
             this.tableName = tableName;
@@ -1835,6 +1872,7 @@ public final class TestValuesTableFactory
             this.parallelism = parallelism;
             this.changelogModeEnforced = changelogModeEnforced;
             this.rowtimeIndex = rowtimeIndex;
+            this.tableSchema = tableSchema;
         }
 
         @Override
@@ -1927,9 +1965,20 @@ public final class TestValuesTableFactory
                 assertThat(runtimeSink.equals("SinkFunction")).isTrue();
                 SinkFunction<RowData> sinkFunction;
                 if (primaryKeyIndices.length > 0) {
+                    // TODO FLINK-31301 currently partial-insert composite columns are not supported
+                    int[][] targetColumns = context.getTargetColumns().orElse(new int[0][]);
+                    checkArgument(
+                            Arrays.stream(targetColumns).allMatch(subArr -> subArr.length <= 1),
+                            "partial-insert composite columns are not supported yet!");
+
                     sinkFunction =
                             new KeyedUpsertingSinkFunction(
-                                    tableName, converter, primaryKeyIndices, expectedNum);
+                                    tableName,
+                                    converter,
+                                    primaryKeyIndices,
+                                    Arrays.stream(targetColumns).mapToInt(a -> a[0]).toArray(),
+                                    expectedNum,
+                                    tableSchema.getFieldCount());
                 } else {
                     checkArgument(
                             expectedNum == -1,
@@ -1954,7 +2003,8 @@ public final class TestValuesTableFactory
                     writableMetadata,
                     parallelism,
                     changelogModeEnforced,
-                    rowtimeIndex);
+                    rowtimeIndex,
+                    tableSchema);
         }
 
         @Override
@@ -2024,14 +2074,22 @@ public final class TestValuesTableFactory
 
     /**
      * A {@link SourceFunction} which collects specific static {@link RowData} without
-     * serialization.
+     * serialization, and sleeps {@link #sleepTimeMillis} every {@link #sleepAfterElements}
+     * elements.
      */
     private static class FromRowDataSourceFunction implements SourceFunction<RowData> {
         private final String dataId;
+        private final int sleepAfterElements;
+        private final long sleepTimeMillis;
+        private final AtomicInteger elementCtr = new AtomicInteger(0);
+
         private volatile boolean isRunning = true;
 
-        public FromRowDataSourceFunction(String dataId) {
+        public FromRowDataSourceFunction(
+                String dataId, int sleepAfterElements, long sleepTimeMillis) {
             this.dataId = dataId;
+            this.sleepAfterElements = sleepAfterElements;
+            this.sleepTimeMillis = sleepTimeMillis;
         }
 
         @Override
@@ -2042,6 +2100,15 @@ public final class TestValuesTableFactory
 
             while (isRunning && valueIter.hasNext()) {
                 ctx.collect(valueIter.next());
+                if (elementCtr.incrementAndGet() >= sleepAfterElements && sleepTimeMillis > 0) {
+                    try {
+                        Thread.sleep(sleepTimeMillis);
+                        elementCtr.set(0);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
             }
         }
 
